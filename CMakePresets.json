@@ -1,0 +1,58 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 20,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "rk3568-native-release",
+      "displayName": "RK3568 board native Release (NPU + CPU)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-rk3568",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "FACEAPP_BUILD_GUI": "ON",
+        "FACEAPP_ENABLE_RKNN": "ON",
+        "FACEAPP_ENABLE_OPENCV_DNN": "ON",
+        "FACEAPP_ENABLE_LBPH": "ON",
+        "FACEAPP_RKNN_LIBRARY": "/lib/librknnrt.so"
+      }
+    },
+    {
+      "name": "rk3568-cpu-only",
+      "displayName": "RK3568 CPU only (no NPU, for A/B comparison)",
+      "inherits": "rk3568-native-release",
+      "binaryDir": "${sourceDir}/build-rk3568-cpu",
+      "cacheVariables": {
+        "FACEAPP_ENABLE_RKNN": "OFF"
+      }
+    },
+    {
+      "name": "rk3568-cross-release",
+      "displayName": "RK3568 cross-compile Release template",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/rk3568-cross-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/rk3568-aarch64-template.cmake",
+        "FACEAPP_BUILD_GUI": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "rk3568-native-release",
+      "configurePreset": "rk3568-native-release"
+    },
+    {
+      "name": "rk3568-cpu-only",
+      "configurePreset": "rk3568-cpu-only"
+    },
+    {
+      "name": "rk3568-cross-release",
+      "configurePreset": "rk3568-cross-release"
+    }
+  ]
+}

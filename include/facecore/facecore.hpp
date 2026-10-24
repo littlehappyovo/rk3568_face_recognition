@@ -1,0 +1,15 @@
+#pragma once
+
+#include "facecore/backend_factory.hpp"
+#include "facecore/config.hpp"
+#include "facecore/dataset.hpp"
+#include "facecore/detector.hpp"
+#include "facecore/embedding.hpp"
+#include "facecore/frame_source.hpp"
+#include "facecore/preprocess.hpp"
+#include "facecore/recognizer.hpp"
+#include "facecore/rknn.hpp"
+#include "facecore/tracker.hpp"
+#include "facecore/training.hpp"
+#include "facecore/types.hpp"
+#include "facecore/yunet_decode.hpp"

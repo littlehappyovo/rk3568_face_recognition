@@ -1,0 +1,137 @@
+{
+  "detector": {
+    "model": "models/face_detection_yunet_2023mar.onnx",
+    "input_width": 640,
+    "input_height": 640,
+    "score_threshold": 0.55,
+    "nms_threshold": 0.3,
+    "top_k": 5000,
+    "backend_id": 0,
+    "target_id": 0,
+    "backend": "rknn",
+    "rknn": {
+      "model": "models/face_detection_yunet_320.rknn",
+      "input_color": "bgr",
+      "input_layout": "nhwc",
+      "input_scale": 1.0,
+      "input_mean": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "input_std": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "input_quantized": -1,
+      "core_mask": 0,
+      "output_names": [],
+      "objectness_mode": 0
+    }
+  },
+  "tracker": {
+    "minimum_iou": 0.2,
+    "maximum_normalized_center_distance": 1.25,
+    "maximum_missed_frames": 8,
+    "smoothing_alpha": 0.85,
+    "detection_interval_frames": 10,
+    "recognition_interval_ms": 1000
+  },
+  "preprocess": {
+    "face_width": 128,
+    "face_height": 128,
+    "box_expansion": 0.18,
+    "align_by_eyes": 1,
+    "equalize_histogram": 1,
+    "version": "gray128-eq-v1"
+  },
+  "quality": {
+    "minimum_face_width": 80,
+    "minimum_brightness": 35.0,
+    "maximum_brightness": 225.0,
+    "minimum_laplacian_variance": 45.0,
+    "maximum_clipped_fraction": 0.1,
+    "duplicate_mean_absolute_difference": 3.0
+  },
+  "lbph": {
+    "radius": 1,
+    "neighbors": 8,
+    "grid_x": 8,
+    "grid_y": 8,
+    "distance_threshold": 75.0,
+    "minimum_distance_margin": 3.0
+  },
+  "sface": {
+    "model": "models/face_recognition_sface_2021dec.onnx",
+    "cosine_threshold": 0.363,
+    "minimum_cosine_margin": 0.04,
+    "model_identity": "sface-2021dec-sha256-0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79",
+    "backend_id": 0,
+    "target_id": 0,
+    "input_width": 112,
+    "input_height": 112,
+    "embedding_dim": 128,
+    "backend": "opencv",
+    "rknn": {
+      "model": "models/face_recognition_sface_112.rknn",
+      "input_color": "rgb",
+      "input_layout": "nhwc",
+      "input_scale": 1.0,
+      "input_mean": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "input_std": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "input_quantized": -1,
+      "core_mask": 0,
+      "output_names": []
+    }
+  },
+  "mobilefacenet": {
+    "model": "models/mobilefacenet_float_opt3.rknn",
+    "cosine_threshold": 0.55,
+    "minimum_cosine_margin": 0.04,
+    "model_identity": "mobilefacenet-w600k-mbf-rk3568-sha256-1560cdab2f9385567b06ff9c78dffa003175cb186621ffc8f427bec80e781253",
+    "backend_id": 0,
+    "target_id": 0,
+    "input_width": 112,
+    "input_height": 112,
+    "embedding_dim": 512,
+    "backend": "rknn",
+    "rknn": {
+      "model": "models/mobilefacenet_float_opt3.rknn",
+      "input_color": "rgb",
+      "input_layout": "auto",
+      "input_scale": 1.0,
+      "input_mean": [
+        127.5,
+        127.5,
+        127.5
+      ],
+      "input_std": [
+        127.5,
+        127.5,
+        127.5
+      ],
+      "input_quantized": -1,
+      "core_mask": 0,
+      "output_names": [],
+      "input_mode": "raw_uint8"
+    }
+  },
+  "camera": {
+    "device": "",
+    "gstreamer_pipeline": "",
+    "index": 0,
+    "width": 1280,
+    "height": 720,
+    "fps": 30.0
+  },
+  "dataset_root": "data"
+}

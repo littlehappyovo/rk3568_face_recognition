@@ -1,0 +1,42 @@
+{
+  "opencv_zoo_commit": "47534e27c9851bb1128ccc0102f1145e27f23f98",
+  "models": [
+    {
+      "file": "face_detection_yunet_2023mar.onnx",
+      "purpose": "OpenCV YuNet detector",
+      "size_bytes": 232589,
+      "sha256": "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
+      "url": "https://media.githubusercontent.com/media/opencv/opencv_zoo/47534e27c9851bb1128ccc0102f1145e27f23f98/models/face_detection_yunet/face_detection_yunet_2023mar.onnx",
+      "license": "../third_party_licenses/YuNet_LICENSE.txt"
+    },
+    {
+      "file": "face_recognition_sface_2021dec.onnx",
+      "purpose": "OpenCV SFace embedding recognizer",
+      "size_bytes": 38696353,
+      "sha256": "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79",
+      "url": "https://media.githubusercontent.com/media/opencv/opencv_zoo/47534e27c9851bb1128ccc0102f1145e27f23f98/models/face_recognition_sface/face_recognition_sface_2021dec.onnx",
+      "license": "../third_party_licenses/SFace_LICENSE.txt"
+    },
+    {
+      "file": "face_detection_yunet_320.rknn",
+      "purpose": "RK3568 NPU YuNet detector",
+      "size_bytes": 369356,
+      "sha256": "2093e9ae9ce5be3c0f511913367446a84677da9b060e4dc649474a9ec6e12979",
+      "source": "Locally converted RKNN model; supply separately"
+    },
+    {
+      "file": "face_recognition_sface_112.rknn",
+      "purpose": "Optional RKNN SFace recognizer",
+      "size_bytes": 16320518,
+      "sha256": "a1c70bca4c2f049bb6e9de9d21a16ae488efaa053da4382cc7e58fe036c3a619",
+      "source": "Locally converted RKNN model; supply separately"
+    },
+    {
+      "file": "mobilefacenet_float_opt3.rknn",
+      "purpose": "RK3568 MobileFaceNet recognizer, 512-dimensional embedding",
+      "size_bytes": 7264047,
+      "sha256": "1560cdab2f9385567b06ff9c78dffa003175cb186621ffc8f427bec80e781253",
+      "source": "Locally converted RKNN model; supply separately"
+    }
+  ]
+}

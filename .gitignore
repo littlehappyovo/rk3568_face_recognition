@@ -1,0 +1,34 @@
+# Build outputs and editor files
+/build*/
+/out/
+/dist/
+*.user
+*.suo
+*.VC.db
+__pycache__/
+*.pyc
+
+# Local runtime data and generated face galleries
+/data/
+/runtime/
+/logs/
+/validation-output/
+/.codex-backups/
+*.pid
+*.log
+/mipi_kms.json
+
+# Assets and vendor SDK are installed locally
+/models/*.onnx
+/models/*.rknn
+/models/*.yml
+/models/*.yaml
+/third_party/rknn/rknn_api.h
+*.so
+*.so.*
+
+# Local credentials/config overrides
+.env
+.env.*
+*.pem
+*.key
