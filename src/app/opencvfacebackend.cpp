@@ -1,4 +1,5 @@
 #include "opencvfacebackend.h"
+#include "voiceannouncer.h"
 
 #include <QColor>
 #include <QCoreApplication>
@@ -372,8 +373,9 @@ public:
     explicit AsyncDetector(std::unique_ptr<facecore::IFaceDetector> detector)
         : detector_(std::move(detector))
         , detectorName_(detector_ ? detector_->name() : std::string("unavailable"))
-        , thread_([this] { run(); })
     {
+        // All mutexes, condition variables and state must exist before run().
+        thread_ = std::thread([this] { run(); });
     }
 
     ~AsyncDetector() { stop(); }
@@ -595,6 +597,7 @@ void OpenCvFaceBackend::configureBackend(const QString &backendId)
     try {
         initializeCore();
         m_backendId = backendId;
+        if (m_voice) m_voice->reset();
         m_recognitionMemory.clear();
         clearReferenceCards();
         if (m_recognitionEnabled && !backendReady()) {
@@ -749,6 +752,7 @@ void OpenCvFaceBackend::finishDatabaseChange(const QString &message)
     const bool stale = std::filesystem::exists(m_config.datasetRoot /
         (".gallery-stale-" + m_backendId.toStdString()));
     if (stale) {
+        if (m_voice) m_voice->reset();
         m_recognitionEnabled = false;
         emit recognitionEnabledChanged(false);
         emit modelChanged(tr("需要重建"), tr("人脸库已变更，请执行“训练 / 重建模型”后开启识别。"));
@@ -1370,12 +1374,14 @@ void OpenCvFaceBackend::setRecognitionEnabled(bool enabled)
         initializeCore();
         if (enabled && !backendReady()) {
             m_recognitionEnabled = false;
+            if (m_voice) m_voice->reset();
             emit recognitionEnabledChanged(false);
             emit errorOccurred(tr("尚无可用模型"),
                                tr("请先采集人员数据并执行“训练 / 重建模型”。"));
             return;
         }
         m_recognitionEnabled = enabled;
+        if (!enabled && m_voice) m_voice->reset();
         emit recognitionEnabledChanged(enabled);
         m_recognitionMemory.clear();
         clearReferenceCards();
@@ -1384,13 +1390,26 @@ void OpenCvFaceBackend::setRecognitionEnabled(bool enabled)
                  enabled ? tr("实时识别已开启") : tr("当前仅进行人脸检测"));
     } catch (const std::exception &exception) {
         m_recognitionEnabled = false;
+        if (m_voice) m_voice->reset();
         emit recognitionEnabledChanged(false);
         reportException(tr("切换识别状态失败"), exception);
     }
 }
 
+void OpenCvFaceBackend::setVoiceVolume(int volume, bool muted)
+{
+    if (m_shutdownRequested.load(std::memory_order_relaxed)) return;
+    try {
+        initializeCore();
+        m_voice->setVolume(volume,muted);
+    } catch (const std::exception &exception) {
+        qWarning().noquote() << "[voice]" << exceptionText(exception);
+    }
+}
+
 void OpenCvFaceBackend::shutdown()
 {
+    m_voice.reset();
     m_shutdownRequested.store(true, std::memory_order_relaxed);
     m_frameTimer->stop();
     if (m_cameraReader) {
@@ -1487,6 +1506,7 @@ void OpenCvFaceBackend::processNextFrame()
             m_cameraReader->close();
         }
         reportException(tr("视频处理失败"), exception);
+        if (m_voice) m_voice->reset();
     }
 }
 
@@ -1607,6 +1627,11 @@ void OpenCvFaceBackend::initializeCore()
     }
     loadRegistry();
     loadNewestModels();
+    auto voiceSettings=VoiceSettings::load(m_applicationDirectory);
+    voiceSettings.preferencesFile=QString::fromStdString((m_runtimeDirectory/"voice-preferences.ini").string());
+    m_voice = std::make_unique<VoiceAnnouncer>(std::move(voiceSettings));
+    connect(m_voice.get(),&VoiceAnnouncer::volumeChanged,this,&FaceBackendService::voiceVolumeChanged);
+    emit voiceVolumeChanged(m_voice->volume(),m_voice->muted());
     m_initialized = true;
 }
 
@@ -1782,6 +1807,7 @@ void OpenCvFaceBackend::registerPersonOrThrow(const PersonProfile &person)
 
 void OpenCvFaceBackend::resetTrackingState() noexcept
 {
+    if (m_voice) m_voice->reset();
     if (m_asyncDetector) {
         m_asyncDetector->discardPendingResults();
     }
@@ -2039,6 +2065,14 @@ FrameResult OpenCvFaceBackend::processFrame(
             track.detection.box.width / static_cast<qreal>(frame.image.cols),
             track.detection.box.height / static_cast<qreal>(frame.image.rows));
         output.faces.push_back(std::move(observation));
+    }
+
+    // Only live, enabled recognition speaks. Imported still images never do.
+    // The optical-flow/tracker lifecycle defines loss, with no wall-clock cooldown.
+    if (m_voice && !stillImage && allowCapture && m_recognitionEnabled) {
+        QSet<int> alive;
+        for (const auto id : m_tracker->activeTrackIds()) alive.insert(static_cast<int>(id));
+        m_voice->onFrame(output.faces, QDateTime::currentDateTime().time().hour(), alive);
     }
 
     for (auto iterator = m_recognitionMemory.begin(); iterator != m_recognitionMemory.end();) {

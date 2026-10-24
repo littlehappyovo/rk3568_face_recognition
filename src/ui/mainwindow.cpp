@@ -5,6 +5,9 @@
 #include "facedatabasedialog.h"
 
 #include <QCheckBox>
+#include <QApplication>
+#include <QKeyEvent>
+#include <QSlider>
 #include <QComboBox>
 #include <QFileDialog>
 #include <QFormLayout>
@@ -40,6 +43,7 @@ MainWindow::MainWindow(FaceBackendService *backend, bool autoStart, QWidget *par
     buildUi();
     connectBackend(backend);
     updateControls();
+    qApp->installEventFilter(this);
 
     // 延迟到当前窗口构造完成后再发初始化请求，避免 backend 收到请求时控件
     // 还没有创建完。singleShot(0) 不是等待很久，而是放到下一轮事件循环。
@@ -188,6 +192,25 @@ void MainWindow::buildUi()
     modelLayout->addWidget(m_trainButton);
     modelLayout->addWidget(m_databaseButton);
     modelLayout->addWidget(m_recognitionCheck);
+    auto *voiceRow=new QHBoxLayout;
+    voiceRow->addWidget(new QLabel(tr("播报音量："),modelGroup));
+    m_voiceVolume=new QSlider(Qt::Horizontal,modelGroup);
+    m_voiceVolume->setObjectName(QStringLiteral("voiceVolume"));
+    m_voiceVolume->setRange(0,100); m_voiceVolume->setValue(90);
+    auto *volumeLabel=new QLabel(QStringLiteral("90%"),modelGroup);
+    m_voiceVolumeLabel=volumeLabel;
+    volumeLabel->setMinimumWidth(45);
+    m_voiceMute=new QCheckBox(tr("静音"),modelGroup);
+    m_voiceMute->setObjectName(QStringLiteral("voiceMute"));
+    voiceRow->addWidget(m_voiceVolume,1); voiceRow->addWidget(volumeLabel); voiceRow->addWidget(m_voiceMute);
+    modelLayout->addLayout(voiceRow);
+    connect(m_voiceVolume,&QSlider::valueChanged,this,[this,volumeLabel](int value) {
+        volumeLabel->setText(QString::number(value)+"%");
+        emit voiceVolumeRequested(value,m_voiceMute->isChecked());
+    });
+    connect(m_voiceMute,&QCheckBox::toggled,this,[this](bool muted) {
+        emit voiceVolumeRequested(m_voiceVolume->value(),muted);
+    });
     modelLayout->addWidget(m_trainingProgress);
     modelLayout->addWidget(m_modelLabel);
     controlsLayout->addWidget(modelGroup);
@@ -305,6 +328,13 @@ void MainWindow::connectBackend(FaceBackendService *backend)
             backend, &FaceBackendService::trainModel, Qt::QueuedConnection);
     connect(this, &MainWindow::recognitionRequested,
             backend, &FaceBackendService::setRecognitionEnabled, Qt::QueuedConnection);
+    connect(this,&MainWindow::voiceVolumeRequested,backend,&FaceBackendService::setVoiceVolume,Qt::QueuedConnection);
+    connect(backend,&FaceBackendService::voiceVolumeChanged,this,[this](int volume,bool muted) {
+        const QSignalBlocker sliderBlock(m_voiceVolume),muteBlock(m_voiceMute);
+        m_voiceVolume->setValue(volume); m_voiceMute->setChecked(muted);
+        m_voiceVolumeLabel->setText(QString::number(volume)+"%");
+        m_voiceVolume->setToolTip(tr("播报音量：%1%").arg(volume));
+    });
 
     connect(backend, &FaceBackendService::camerasChanged,
             this, &MainWindow::onCamerasChanged);
@@ -354,6 +384,23 @@ void MainWindow::chooseImages()
         }
         emit importImagesRequested(paths, person, saveToDataset);
     }
+}
+
+bool MainWindow::eventFilter(QObject *watched,QEvent *event)
+{
+    auto *widget=qobject_cast<QWidget *>(watched);
+    if (event->type()==QEvent::KeyPress && widget && (widget==this || isAncestorOf(widget))) {
+        const int key=static_cast<QKeyEvent *>(event)->key();
+        if (key==Qt::Key_VolumeUp || key==Qt::Key_VolumeDown) {
+            m_voiceMute->setChecked(false);
+            m_voiceVolume->setValue(m_voiceVolume->value()+(key==Qt::Key_VolumeUp ? 5 : -5));
+            return true;
+        }
+        if (key==Qt::Key_VolumeMute) {
+            m_voiceMute->toggle(); return true;
+        }
+    }
+    return QMainWindow::eventFilter(watched,event);
 }
 
 void MainWindow::startSelectedCamera()

@@ -10,6 +10,7 @@
 - 删除会先保存人员表和样本索引归档，原照片保留；删除或改变启用状态后需重建图库。兼容版本清单防止重启时回退到删除前的旧特征。
 - 支持原生V4L2 DMA-BUF导出取流、异步采集/检测，以及MIPI屏的eglfs全屏显示和旋转。
 - 删除确认前固定人员和样本ID，异步预览刷新不会改变删除目标或访问已释放的列表项。
+- 稳定识别人脸后按时段问候启用人员，陌生人或禁用人员提示“无权限，请联系管理员”；按光流/跟踪轨迹去重，确认丢失后可重新播报。
 
 ## 依赖与模型
 
@@ -41,7 +42,7 @@ cmake --preset rk3568-cpu-only
 cmake --build --preset rk3568-cpu-only -j2
 ```
 
-根目录CMake构建应用和核心库，当前4组回归测试由`verification/`独立构建。旧版本中未随工程提供的`tools/rknn_probe.cpp`和`tests/test_core.cpp`已从构建入口移除。
+根目录CMake构建应用和核心库，当前5组回归测试由`verification/`独立构建。旧版本中未随工程提供的`tools/rknn_probe.cpp`和`tests/test_core.cpp`已从构建入口移除。
 
 ## 启动
 
@@ -63,11 +64,23 @@ MIPI脚本涉及gdm3启停，需按板卡部署环境提供相应权限。默认
 
 运行数据默认位于Qt的`AppLocalDataLocation`，组织名为`PortableFaceSystem`、应用名为`FaceRecognitionSystem`。`FACEAPP_DATA_DIR=/path/to/runtime`可覆盖运行目录，配置中的相对`dataset_root`在该目录内解析；采集照片、人员表和生成图库保存在运行目录。
 
+## 语音播报
+
+固定提示音见[audio/README.md](audio/README.md)。默认走RK809扬声器，播放设备、启用开关和时段边界配置在`config/voice.json`；`FACEAPP_VOICE_CONFIG`可指定独立配置，`FACEAPP_VOICE_ENABLED=0`可关闭播报。
+
+默认05:00—10:59播“早上好”，11:00—13:59播“中午好”，14:00—17:59播“下午好”，其余时间播“晚上好”，使用系统本地时间。组内/组外均按启用人员问候；陌生人和禁用人员播“无权限，请联系管理员”。低质量、等待投票、模型错误和导入静态图片不触发播报。
+
+播报沿用现有光流预测和跟踪器ID：同一条存活轨迹只播一次，短暂遮挡保留状态，确认丢失或关闭输入后释放状态，重现并稳定识别后可再次播报。没有固定秒数冷却。播放使用异步`QProcess`，一次播放一段、最多排队8段，丢失或失去稳定识别的待播目标会被移出队列。播放失败只记日志，不中断识别。
+
+桌面音频服务可用时优先通过`paplay`播放到RK809，Ubuntu系统音量和静音键生效。服务不存在或播放失败时回退`aplay`直连。全屏eglfs模式会停止GDM，Ubuntu桌面的音量快捷键服务也随之退出；此时可用界面的“播报音量”滑块、静音开关，或由程序处理键盘音量键。音量/静音保存到应用运行目录的`voice-preferences.ini`，再次启动恢复。界面音量控制RK809的DAC，桌面模式下还会叠加Ubuntu的软件音量。
+
+显式测试真实音频可执行`FACEAPP_LIVE_AUDIO_TEST=1 ./build-verification/voice_tests liveRk809Playback`，会实际播放问候和拒绝提示。普通回归跳过该项。对独占显示环境，可在独立语音配置中设置`prefer_system_audio=false`验证ALSA通路。
+
 ## 测试
 
 以下使用CPU构建的核心库；在板端可将路径替换为`build-rk3568`：
 
-运行全部4组回归前，至少按[模型说明](models/README.md)准备`models/face_detection_yunet_2023mar.onnx`。后台适配器初始化使用这个检测模型；缺少时会明确报告依赖缺失。
+运行全部5组回归前，至少按[模型说明](models/README.md)准备`models/face_detection_yunet_2023mar.onnx`。后台适配器初始化使用这个检测模型；缺少时会明确报告依赖缺失。
 
 ```bash
 cmake -S verification -B build-verification -G Ninja \
@@ -88,7 +101,8 @@ src/ui/               主窗口、人脸库管理和画面控件
 src/core/             检测、跟踪、预处理、图库与数据存储
 include/facecore/     核心库接口
 config/               后端、相机、质量及阈值配置
-verification/         4组离线回归与显式实机用例
+verification/         5组离线回归与显式实机用例
+audio/                固定播报WAV、生成记录与说明
 scripts/              构建、依赖、自检和板端显示入口
 models/               模型清单和准备说明
 third_party_licenses/ 上游模型许可文本

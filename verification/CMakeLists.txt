@@ -6,6 +6,11 @@ enable_testing()
 find_package(Qt5 REQUIRED COMPONENTS Widgets Test)
 find_package(OpenCV 4.5.4 REQUIRED)
 set(APP_ROOT "${CMAKE_CURRENT_LIST_DIR}/..")
+add_executable(voice_tests voice_tests.cpp ${APP_ROOT}/src/app/voiceannouncer.cpp ${APP_ROOT}/src/core/tracker.cpp)
+target_include_directories(voice_tests PRIVATE ${APP_ROOT}/src/app ${APP_ROOT}/src/ui ${APP_ROOT}/include ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(voice_tests PRIVATE Qt5::Widgets Qt5::Test ${OpenCV_LIBS})
+target_compile_definitions(voice_tests PRIVATE FACE_VOICE_PROJECT_ROOT="${APP_ROOT}")
+add_test(NAME face.voice COMMAND voice_tests)
 add_executable(face_ui_tests
     feature_ui_tests.cpp
     ${APP_ROOT}/src/ui/mainwindow.cpp
@@ -29,6 +34,7 @@ add_test(NAME face.recognition_memory COMMAND recognition_memory_tests)
 if(FACEAPP_CORE_BUILD)
     add_executable(face_backend_tests feature_backend_tests.cpp
         ${APP_ROOT}/src/app/opencvfacebackend.cpp
+        ${APP_ROOT}/src/app/voiceannouncer.cpp
         ${APP_ROOT}/src/ui/mainwindow.cpp
         ${APP_ROOT}/src/ui/frameview.cpp
         ${APP_ROOT}/src/ui/facedatabasedialog.cpp

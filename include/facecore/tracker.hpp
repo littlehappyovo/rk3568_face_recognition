@@ -20,6 +20,8 @@ public:
     FaceTracker& operator=(FaceTracker&&) noexcept;
 
     std::vector<TrackedFace> update(const std::vector<FaceDetection>& detections);
+    // Includes temporarily missed tracks until the configured loss limit.
+    std::vector<std::uint64_t> activeTrackIds() const;
     void reset() noexcept;
     static cv::Scalar colorForTrack(std::uint64_t trackId) noexcept;
 

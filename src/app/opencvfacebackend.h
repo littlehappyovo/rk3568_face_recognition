@@ -17,6 +17,7 @@
 #include <unordered_set>
 
 class QTimer;
+class VoiceAnnouncer;
 
 // Qt 层和 facecore 核心库之间的业务适配器。
 //
@@ -32,6 +33,7 @@ public:
     void requestShutdown() noexcept override;
 
 public slots:
+    void setVoiceVolume(int volume, bool muted) override;
     void configureBackend(const QString &backendId) override;
     void refreshCameras() override;
     void startAutomatically() override;
@@ -57,6 +59,7 @@ private slots:
     void processNextFrame();
 
 private:
+    friend class BackendDatabaseTests;
     class AsyncFrameReader;
     class AsyncDetector;
 
@@ -119,6 +122,7 @@ private:
         const std::string &extension);
 
     QString m_applicationDirectory;
+    std::unique_ptr<VoiceAnnouncer> m_voice;
     std::filesystem::path m_runtimeDirectory;
     QString m_backendId = QStringLiteral("mobilefacenet_rknn");
     // embedding 后端的实际状态说明（NPU / CPU / 模型待投放），用于界面提示。

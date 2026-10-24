@@ -1,0 +1,12 @@
+{
+  "enabled": true,
+  "prefer_system_audio": true,
+  "pulse_sink": "alsa_output.platform-rk809-sound.stereo-fallback",
+  "volume": 90,
+  "device": "plughw:CARD=rockchiprk809,DEV=0",
+  "audio_directory": "audio",
+  "morning_start": 5,
+  "noon_start": 11,
+  "afternoon_start": 14,
+  "evening_start": 18
+}

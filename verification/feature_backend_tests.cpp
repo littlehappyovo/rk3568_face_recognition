@@ -1,4 +1,5 @@
 #include "opencvfacebackend.h"
+#include "voiceannouncer.h"
 #include "mainwindow.h"
 #include <QApplication>
 #include <QCheckBox>
@@ -53,6 +54,29 @@ private slots:
         QCOMPARE(samples.size(), 1); QCOMPARE(samples[0].sampleId, QString("S1"));
         QCOMPARE(samples[0].image.pixelColor(20,20), QColor(120,80,40));
         QCOMPARE(errors.count(), 0);
+        backend.shutdown();
+    }
+    void switchingToUnavailableBackendCancelsQueuedSpeech() {
+        QTemporaryDir data; seed(data.path());
+        OpenCvFaceBackend backend(m_root);
+        backend.refreshFaceDatabase();
+        VoiceSettings config; config.audioDirectory=data.path();
+        config.playerProgram=data.path()+"/player";
+        QFile player(config.playerProgram); QVERIFY(player.open(QIODevice::WriteOnly));
+        player.write("#!/bin/sh\nsleep 0.15\nexit 0\n"); player.close();
+        QVERIFY(player.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+        QFile audio(data.path()+"/morning.wav"); QVERIFY(audio.open(QIODevice::WriteOnly));
+        audio.write("test audio"); audio.close();
+        backend.m_voice=std::make_unique<VoiceAnnouncer>(config);
+        backend.m_recognitionEnabled=true;
+        QSignalSpy played(backend.m_voice.get(), &VoiceAnnouncer::playbackRequested);
+        FaceObservation first; first.trackId=1; first.personId="P1";
+        first.identityState=IdentityState::Known;
+        auto second=first; second.trackId=2;
+        backend.m_voice->onFrame({first,second},9); QTRY_COMPARE(played.count(),1);
+        backend.configureBackend("onnx_embedding");
+        QVERIFY(!backend.m_recognitionEnabled);
+        QTest::qWait(300); QCOMPARE(played.count(),1);
         backend.shutdown();
     }
     void unavailableAlignedPhotoFallsBackToGray() {

@@ -104,6 +104,11 @@ fi
 rm -f "$PIDFILE"
 sleep 3
 
+# Board speaker routing must also work without the desktop audio session.
+if [ "${FACEAPP_VOICE_ENABLED:-1}" != 0 ] && [ -f "$ROOT/scripts/setup_rk809_audio.sh" ]; then
+    bash "$ROOT/scripts/setup_rk809_audio.sh" || echo '警告：RK809通路设置失败，人脸识别继续运行。' >&2
+fi
+
 echo "== 环境 =="
 echo "app      $APP"
 echo "config   $CONFIG"

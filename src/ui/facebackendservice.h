@@ -33,12 +33,14 @@ signals:
     void trainingProgress(int percent, const QString &message);
     void modelChanged(const QString &modelVersion, const QString &summary);
     void recognitionEnabledChanged(bool enabled);
+    void voiceVolumeChanged(int volume, bool muted);
     void errorOccurred(const QString &title, const QString &details);
     void faceDatabaseChanged(const FaceDatabasePeople &people);
     void personSamplesChanged(const QString &personId, const FaceDatabaseSamples &samples);
     void databaseOperationFinished(const QString &message);
 
 public slots:
+    virtual void setVoiceVolume(int volume, bool muted) { emit voiceVolumeChanged(volume, muted); }
     virtual void configureBackend(const QString &backendId) = 0;
     virtual void refreshCameras() = 0;
     virtual void startAutomatically() = 0;

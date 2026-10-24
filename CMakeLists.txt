@@ -183,6 +183,8 @@ if(FACEAPP_BUILD_GUI)
         src/app/main.cpp
         src/app/opencvfacebackend.h
         src/app/opencvfacebackend.cpp
+        src/app/voiceannouncer.cpp
+        src/app/voiceannouncer.h
         src/ui/backendtypes.h
         src/ui/facebackendservice.h
         src/ui/frameview.h
@@ -251,6 +253,12 @@ if(FACEAPP_BUILD_GUI)
             VERBATIM
         )
     endif()
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/audio)
+        add_custom_command(TARGET face_recognition_system POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    ${CMAKE_CURRENT_SOURCE_DIR}/audio
+                    $<TARGET_FILE_DIR:face_recognition_system>/audio VERBATIM)
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------
@@ -262,6 +270,7 @@ if(FACEAPP_BUILD_GUI)
     )
     install(DIRECTORY config third_party_licenses
             DESTINATION ${CMAKE_INSTALL_BINDIR})
+    install(DIRECTORY audio DESTINATION ${CMAKE_INSTALL_BINDIR} OPTIONAL)
 endif()
 
 message(STATUS "facecore features: RKNN=${FACEAPP_HAVE_RKNN} "

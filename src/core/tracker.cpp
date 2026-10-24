@@ -163,6 +163,13 @@ std::vector<TrackedFace> FaceTracker::update(const std::vector<FaceDetection>& d
     return output;
 }
 
+std::vector<std::uint64_t> FaceTracker::activeTrackIds() const {
+    std::vector<std::uint64_t> ids;
+    ids.reserve(tracks_.size());
+    for (const auto& track : tracks_) ids.push_back(track.id);
+    return ids;
+}
+
 void FaceTracker::reset() noexcept {
     tracks_.clear();
     nextId_ = 1;

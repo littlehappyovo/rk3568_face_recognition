@@ -13,6 +13,7 @@ class QLineEdit;
 class QProgressBar;
 class QPushButton;
 class QSpinBox;
+class QSlider;
 
 class MainWindow final : public QMainWindow
 {
@@ -37,6 +38,10 @@ signals:
     void trainModelRequested();
     void recognitionRequested(bool enabled);
     void autoStartRequested();
+    void voiceVolumeRequested(int volume, bool muted);
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private slots:
     void chooseImages();
@@ -75,6 +80,9 @@ private:
     QPushButton *m_trainButton = nullptr;
     QPushButton *m_databaseButton = nullptr;
     QCheckBox *m_recognitionCheck = nullptr;
+    QSlider *m_voiceVolume = nullptr;
+    QCheckBox *m_voiceMute = nullptr;
+    QLabel *m_voiceVolumeLabel = nullptr;
     QProgressBar *m_captureProgress = nullptr;
     QProgressBar *m_rawCaptureProgress = nullptr;
     QProgressBar *m_trainingProgress = nullptr;

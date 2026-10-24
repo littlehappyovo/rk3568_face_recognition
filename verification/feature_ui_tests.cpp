@@ -13,6 +13,7 @@
 #include <QDir>
 #include <QAbstractButton>
 #include <QMessageBox>
+#include <QSlider>
 #include <QtTest>
 
 class FeatureUiTests : public QObject {
@@ -83,6 +84,17 @@ private slots:
         QVERIFY(!states.isEmpty());
         for (const auto &state : states)
             QVERIFY(state[0].value<ServiceState>() != ServiceState::Streaming);
+        backend.shutdown();
+    }
+    void voiceControlsAndMediaKeysAreAvailable() {
+        MockFaceBackend backend; MainWindow window(&backend,false);
+        auto *slider=window.findChild<QSlider *>("voiceVolume");
+        auto *mute=window.findChild<QCheckBox *>("voiceMute");
+        QVERIFY(slider && mute);
+        slider->setValue(70);
+        QTest::keyClick(&window,Qt::Key_VolumeUp); QCOMPARE(slider->value(),75);
+        QTest::keyClick(&window,Qt::Key_VolumeDown); QCOMPARE(slider->value(),70);
+        QTest::keyClick(&window,Qt::Key_VolumeMute); QVERIFY(mute->isChecked());
         backend.shutdown();
     }
 
