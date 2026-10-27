@@ -22,6 +22,12 @@ if [ ! -x "$BUILD/face_recognition_system" ]; then
     exit 1
 fi
 
+# The access service stays in the project environment; never install into system Python here.
+export FACEAPP_ACCESS_PYTHON="${FACEAPP_ACCESS_PYTHON:-$ROOT/server/.venv/bin/python}"
+if [ ! -x "$FACEAPP_ACCESS_PYTHON" ]; then
+    echo "[access] 管理后台环境未就绪；请运行scripts/setup_access_server.sh。摄像头仍可启动。" >&2
+fi
+
 export FACEAPP_CONFIG="$CONFIG"
 
 if [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then

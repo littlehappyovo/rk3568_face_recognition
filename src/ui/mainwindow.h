@@ -3,7 +3,16 @@
 #include "backendtypes.h"
 
 #include <QMainWindow>
+#include <QDateTime>
+#include <QElapsedTimer>
+#include <QPointer>
+#include <functional>
 
+class AccessClient;
+class FaceDatabaseDialog;
+class AdminLoginDialog;
+class QGroupBox;
+class QScrollArea;
 class FaceBackendService;
 class FrameView;
 class QCheckBox;
@@ -22,6 +31,11 @@ class MainWindow final : public QMainWindow
 public:
     explicit MainWindow(FaceBackendService *backend, QWidget *parent = nullptr);
     MainWindow(FaceBackendService *backend, bool autoStart, QWidget *parent = nullptr);
+
+    void setAccessClient(AccessClient *client);
+    void setAdminSession(const QString &sessionId, const QDateTime &expiresAt);
+    void lockAdministration();
+    void setStationDirection(const QString &direction, int version);
 
 signals:
     void configureBackendRequested(const QString &backendId);
@@ -56,11 +70,26 @@ private slots:
     void onError(const QString &title, const QString &details);
 
 private:
+    void withAdminAuthorization(std::function<void()> action);
+    void openAdministration();
+    void openDatabase();
     void buildUi();
     void connectBackend(FaceBackendService *backend);
     void updateControls();
     QString stateName(ServiceState state) const;
 
+    bool m_adminUnlocked = false;
+    QString m_adminSession;
+    QDateTime m_adminExpires;
+    QElapsedTimer m_activity, m_refreshClock, m_checkClock;
+    QPointer<AccessClient> m_accessClient;
+    QPointer<FaceDatabaseDialog> m_database;
+    QPointer<AdminLoginDialog> m_login;
+    QGroupBox *m_sourceControls = nullptr;
+    QScrollArea *m_managementControls = nullptr;
+    QPushButton *m_adminButton = nullptr;
+    QLabel *m_directionLabel = nullptr;
+    QComboBox *m_stationDirection = nullptr;
     FaceBackendService *m_backend = nullptr;
     FrameView *m_originalView = nullptr;
     FrameView *m_recognizedView = nullptr;

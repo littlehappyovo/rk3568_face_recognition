@@ -1,4 +1,6 @@
 #include "mainwindow.h"
+#include "accessclient.h"
+#include "adminlogindialog.h"
 
 #include "facebackendservice.h"
 #include "frameview.h"
@@ -44,13 +46,25 @@ MainWindow::MainWindow(FaceBackendService *backend, bool autoStart, QWidget *par
     connectBackend(backend);
     updateControls();
     qApp->installEventFilter(this);
+    auto *sessionTimer=new QTimer(this); sessionTimer->setInterval(100);
+    connect(sessionTimer,&QTimer::timeout,this,[this] {
+        if(!m_adminUnlocked) return;
+        if(QDateTime::currentDateTimeUtc()>=m_adminExpires || m_activity.elapsed()>=300000) {
+            lockAdministration(); return;
+        }
+        if(m_accessClient && m_checkClock.elapsed()>=15000) {
+            m_checkClock.restart(); m_accessClient->checkSession();
+        }
+    }); sessionTimer->start();
 
     // 延迟到当前窗口构造完成后再发初始化请求，避免 backend 收到请求时控件
     // 还没有创建完。singleShot(0) 不是等待很久，而是放到下一轮事件循环。
     QTimer::singleShot(0, this, [this, autoStart] {
-        emit configureBackendRequested(m_backendCombo->currentData().toString());
-        emit refreshCamerasRequested();
-        if (autoStart) emit autoStartRequested();
+        const auto id=m_backendCombo->currentData().toString();
+        QMetaObject::invokeMethod(m_backend,[backend=m_backend,id,autoStart] {
+            backend->configureBackend(id); backend->refreshCameras();
+            if(autoStart) backend->startAutomatically();
+        },Qt::QueuedConnection);
     });
 }
 
@@ -66,7 +80,15 @@ void MainWindow::buildUi()
     rootLayout->setContentsMargins(12, 12, 12, 8);
     rootLayout->setSpacing(10);
 
+    auto *header=new QHBoxLayout;
+    auto *title=new QLabel(tr("人脸识别值守"),central);
+    title->setStyleSheet("font-size:22px;font-weight:600;"); header->addWidget(title);
+    m_directionLabel=new QLabel(tr("方向：等待配置"),central); header->addWidget(m_directionLabel); header->addStretch();
+    m_adminButton=new QPushButton(tr("管理"),central); m_adminButton->setObjectName("adminButton");
+    m_adminButton->setMinimumSize(100,44); header->addWidget(m_adminButton); rootLayout->addLayout(header);
+    connect(m_adminButton,&QPushButton::clicked,this,&MainWindow::openAdministration);
     auto *sourceGroup = new QGroupBox(tr("输入与后端"), central);
+    m_sourceControls=sourceGroup; sourceGroup->setObjectName("sourceControls"); sourceGroup->hide();
     auto *sourceLayout = new QHBoxLayout(sourceGroup);
     m_backendCombo = new QComboBox(sourceGroup);
     m_backendCombo->addItem(tr("OpenCV / LBPH（便携基线）"), QStringLiteral("opencv_lbph"));
@@ -123,6 +145,7 @@ void MainWindow::buildUi()
     bodySplitter->addWidget(viewsWidget);
 
     auto *controlsScroll = new QScrollArea(bodySplitter);
+    m_managementControls=controlsScroll; controlsScroll->setObjectName("managementControls"); controlsScroll->hide();
     controlsScroll->setWidgetResizable(true);
     // 控制栏要放得下"标签 + 输入框"而不出横向滚动条。板端 eglfs 的 DPI 很高，
     // 控件尺寸偏大，所以按像素给足宽度（画面区还剩 1200+，够两路显示）。
@@ -213,6 +236,13 @@ void MainWindow::buildUi()
     });
     modelLayout->addWidget(m_trainingProgress);
     modelLayout->addWidget(m_modelLabel);
+    m_stationDirection=new QComboBox(modelGroup); m_stationDirection->setObjectName("stationDirection");
+    m_stationDirection->addItem(tr("本机方向：进"),"IN"); m_stationDirection->addItem(tr("本机方向：出"),"OUT");
+    modelLayout->addWidget(m_stationDirection);
+    connect(m_stationDirection,qOverload<int>(&QComboBox::activated),this,[this] {
+        const auto direction=m_stationDirection->currentData().toString();
+        withAdminAuthorization([this,direction] { if(m_accessClient) m_accessClient->updateDirection(direction); });
+    });
     controlsLayout->addWidget(modelGroup);
 
     auto *runtimeGroup = new QGroupBox(tr("运行状态"), controls);
@@ -267,7 +297,7 @@ void MainWindow::buildUi()
 
     setCentralWidget(central);
 
-    statusBar()->showMessage(tr("准备就绪。采集多人画面时，请在右侧画面点击需要采集的目标。"));
+    statusBar()->showMessage(tr("准备就绪，等待视频输入。"));
 
     connect(m_backendCombo, qOverload<int>(&QComboBox::currentIndexChanged), this, [this] {
         emit configureBackendRequested(m_backendCombo->currentData().toString());
@@ -281,17 +311,10 @@ void MainWindow::buildUi()
     connect(m_rawCaptureButton, &QPushButton::clicked,
             this, &MainWindow::beginRawFrameCaptureRequested);
     connect(m_trainButton, &QPushButton::clicked, this, &MainWindow::trainModelRequested);
-    auto *database = new FaceDatabaseDialog(m_backend, this);
-    connect(m_databaseButton, &QPushButton::clicked, database, &QDialog::open);
-    connect(database, &FaceDatabaseDialog::capturePersonSelected, this,
-            [this](const PersonProfile &person) {
-                m_personIdEdit->setText(person.personId);
-                m_personNameEdit->setText(person.displayName);
-                m_groupCombo->setCurrentIndex(m_groupCombo->findData(person.group));
-            });
+    connect(m_databaseButton,&QPushButton::clicked,this,&MainWindow::openDatabase);
     connect(m_recognitionCheck, &QCheckBox::toggled, this, &MainWindow::recognitionRequested);
     connect(m_originalView, &FrameView::faceClicked, this, [this](qint64 trackId) {
-        if (m_capturing) {
+        if (m_adminUnlocked && m_capturing) {
             emit selectCaptureTrackRequested(trackId);
             statusBar()->showMessage(tr("已选择采集目标 #%1").arg(trackId), 4000);
         }
@@ -304,30 +327,23 @@ void MainWindow::connectBackend(FaceBackendService *backend)
     // QueuedConnection 会把调用排进 backend 所在线程的事件队列，避免跨线程
     // 直接执行成员函数。
     Q_ASSERT(backend);
-    connect(this, &MainWindow::autoStartRequested,
-            backend, &FaceBackendService::startAutomatically, Qt::QueuedConnection);
-    connect(this, &MainWindow::configureBackendRequested,
-            backend, &FaceBackendService::configureBackend, Qt::QueuedConnection);
-    connect(this, &MainWindow::refreshCamerasRequested,
-            backend, &FaceBackendService::refreshCameras, Qt::QueuedConnection);
-    connect(this, &MainWindow::openCameraRequested,
-            backend, &FaceBackendService::openCamera, Qt::QueuedConnection);
-    connect(this, &MainWindow::closeInputRequested,
-            backend, &FaceBackendService::closeInput, Qt::QueuedConnection);
-    connect(this, &MainWindow::importImagesRequested,
-            backend, &FaceBackendService::importImages, Qt::QueuedConnection);
-    connect(this, &MainWindow::beginCaptureRequested,
-            backend, &FaceBackendService::beginCapture, Qt::QueuedConnection);
-    connect(this, &MainWindow::selectCaptureTrackRequested,
-            backend, &FaceBackendService::selectCaptureTrack, Qt::QueuedConnection);
-    connect(this, &MainWindow::endCaptureRequested,
-            backend, &FaceBackendService::endCapture, Qt::QueuedConnection);
-    connect(this, &MainWindow::beginRawFrameCaptureRequested,
-            backend, &FaceBackendService::beginRawFrameCapture, Qt::QueuedConnection);
-    connect(this, &MainWindow::trainModelRequested,
-            backend, &FaceBackendService::trainModel, Qt::QueuedConnection);
-    connect(this, &MainWindow::recognitionRequested,
-            backend, &FaceBackendService::setRecognitionEnabled, Qt::QueuedConnection);
+    auto queue=[this,backend](std::function<void()> action) {
+        withAdminAuthorization([backend,action=std::move(action)] { QMetaObject::invokeMethod(backend,action,Qt::QueuedConnection); });
+    };
+    connect(this,&MainWindow::configureBackendRequested,this,[queue,backend](const QString &id) { queue([backend,id] { backend->configureBackend(id); }); });
+    connect(this,&MainWindow::refreshCamerasRequested,this,[queue,backend] { queue([backend] { backend->refreshCameras(); }); });
+    connect(this,&MainWindow::openCameraRequested,this,[queue,backend](const QString &id) { queue([backend,id] { backend->openCamera(id); }); });
+    connect(this,&MainWindow::closeInputRequested,this,[queue,backend] { queue([backend] { backend->closeInput(); }); });
+    connect(this,&MainWindow::importImagesRequested,this,[queue,backend](const QStringList &paths,const PersonProfile &person,bool save) { queue([backend,paths,person,save] { backend->importImages(paths,person,save); }); });
+    connect(this,&MainWindow::beginCaptureRequested,this,[queue,backend](const PersonProfile &person,int count) { queue([backend,person,count] { backend->beginCapture(person,count); }); });
+    connect(this,&MainWindow::selectCaptureTrackRequested,this,[queue,backend](qint64 id) { queue([backend,id] { backend->selectCaptureTrack(id); }); });
+    connect(this,&MainWindow::endCaptureRequested,this,[backend] { QMetaObject::invokeMethod(backend,&FaceBackendService::endCapture,Qt::QueuedConnection); });
+    connect(this,&MainWindow::beginRawFrameCaptureRequested,this,[queue,backend] { queue([backend] { backend->beginRawFrameCapture(); }); });
+    connect(this,&MainWindow::trainModelRequested,this,[queue,backend] { queue([backend] { backend->trainModel(); }); });
+    connect(this,&MainWindow::recognitionRequested,this,[queue,backend](bool enabled) { queue([backend,enabled] { backend->setRecognitionEnabled(enabled); }); });
+    connect(backend,&FaceBackendService::stationConfigured,this,[this](const QString &id,const QString &direction,int version,bool) {
+        if(id=="board-in") setStationDirection(direction,version);
+    });
     connect(this,&MainWindow::voiceVolumeRequested,backend,&FaceBackendService::setVoiceVolume,Qt::QueuedConnection);
     connect(backend,&FaceBackendService::voiceVolumeChanged,this,[this](int volume,bool muted) {
         const QSignalBlocker sliderBlock(m_voiceVolume),muteBlock(m_voiceMute);
@@ -363,6 +379,7 @@ void MainWindow::connectBackend(FaceBackendService *backend)
 
 void MainWindow::chooseImages()
 {
+    if(!m_adminUnlocked) return;
     const QString startDirectory = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);
     const QStringList paths = QFileDialog::getOpenFileNames(
         this, tr("选择人脸图片"), startDirectory,
@@ -389,6 +406,12 @@ void MainWindow::chooseImages()
 bool MainWindow::eventFilter(QObject *watched,QEvent *event)
 {
     auto *widget=qobject_cast<QWidget *>(watched);
+    if(m_adminUnlocked && widget && (widget==this || isAncestorOf(widget)) &&
+       (event->type()==QEvent::KeyPress || event->type()==QEvent::MouseButtonPress ||
+        event->type()==QEvent::TouchBegin || event->type()==QEvent::Wheel)) {
+        m_activity.restart();
+        if(m_accessClient && m_refreshClock.elapsed()>=15000) { m_refreshClock.restart(); m_accessClient->refreshSession(); }
+    }
     if (event->type()==QEvent::KeyPress && widget && (widget==this || isAncestorOf(widget))) {
         const int key=static_cast<QKeyEvent *>(event)->key();
         if (key==Qt::Key_VolumeUp || key==Qt::Key_VolumeDown) {
@@ -405,6 +428,7 @@ bool MainWindow::eventFilter(QObject *watched,QEvent *event)
 
 void MainWindow::startSelectedCamera()
 {
+    if(!m_adminUnlocked) return;
     const QString cameraId = m_cameraCombo->currentData().toString();
     if (cameraId.isEmpty()) {
         QMessageBox::warning(this, tr("未选择摄像头"), tr("请刷新并选择一个视频设备。"));
@@ -415,6 +439,7 @@ void MainWindow::startSelectedCamera()
 
 void MainWindow::beginCapture()
 {
+    if(!m_adminUnlocked) return;
     PersonProfile person;
     person.personId = m_personIdEdit->text().trimmed();
     person.displayName = m_personNameEdit->text().trimmed();
@@ -526,14 +551,14 @@ void MainWindow::onTrainingProgress(int percent, const QString &message)
 
 void MainWindow::onError(const QString &title, const QString &details)
 {
-    QMessageBox::critical(this, title, details);
+    if(m_adminUnlocked) QMessageBox::critical(this, title, details);
     statusBar()->showMessage(title + QStringLiteral("：") + details, 10000);
 }
 
 void MainWindow::updateControls()
 {
     const bool hasCamera = m_cameraCombo->count() > 0;
-    const bool busy = m_training || m_state == ServiceState::Importing;
+    const bool busy = !m_adminUnlocked || m_training || m_state == ServiceState::Importing;
     m_backendCombo->setEnabled(!busy && !m_capturing);
     m_cameraCombo->setEnabled(!m_streaming && !busy);
     m_refreshButton->setEnabled(!m_streaming && !busy);
@@ -545,7 +570,8 @@ void MainWindow::updateControls()
     m_groupCombo->setEnabled(!busy && !m_capturing);
     m_sampleCountSpin->setEnabled(!busy && !m_capturing);
     m_captureButton->setEnabled(m_streaming && !m_capturing && !m_rawCapturing && !busy);
-    m_endCaptureButton->setEnabled(m_capturing);
+    m_endCaptureButton->setEnabled(m_adminUnlocked && m_capturing);
+    m_stationDirection->setEnabled(m_adminUnlocked);
     m_rawCaptureButton->setEnabled(m_streaming && !m_capturing && !m_rawCapturing && !busy);
     m_trainButton->setEnabled(!m_capturing && !m_rawCapturing && !busy);
     m_databaseButton->setEnabled(!m_capturing && !m_rawCapturing && !busy);
@@ -563,4 +589,66 @@ QString MainWindow::stateName(ServiceState state) const
     case ServiceState::Error: return tr("错误");
     }
     return tr("未知状态");
+}
+
+void MainWindow::setAccessClient(AccessClient *client) {
+    if(m_accessClient) disconnect(m_accessClient,nullptr,this,nullptr);
+    m_accessClient=client;
+    if(!client) return;
+    connect(client,&AccessClient::sessionLost,this,&MainWindow::lockAdministration);
+    connect(client,&AccessClient::sessionRefreshed,this,[this](const QDateTime &expiry) { if(m_adminUnlocked) m_adminExpires=expiry; });
+    connect(client,&AccessClient::errorOccurred,this,[this](const QString &message) { statusBar()->showMessage(message,10000); });
+}
+void MainWindow::setAdminSession(const QString &sessionId,const QDateTime &expiresAt) {
+    if(sessionId.isEmpty() || !expiresAt.isValid() || expiresAt<=QDateTime::currentDateTimeUtc()) return;
+    if(m_accessClient && sessionId!=m_accessClient->sessionId()) return;
+    m_adminSession=sessionId; m_adminExpires=expiresAt; m_adminUnlocked=true;
+    m_activity.start(); m_refreshClock.start(); m_checkClock.start();
+    m_sourceControls->show(); m_managementControls->show(); m_adminButton->setText(tr("返回值守")); updateControls();
+}
+void MainWindow::lockAdministration() {
+    const bool wasUnlocked=m_adminUnlocked;
+    m_adminUnlocked=false; m_adminSession.clear(); m_adminExpires={};
+    m_sourceControls->hide(); m_managementControls->hide(); m_adminButton->setText(tr("管理"));
+    if(m_database) { m_database->close(); m_database->deleteLater(); m_database=nullptr; }
+    if(m_login) { m_login->reject(); m_login->deleteLater(); m_login=nullptr; }
+    if(wasUnlocked) emit endCaptureRequested();
+    updateControls();
+    if(m_accessClient && !m_accessClient->sessionId().isEmpty()) m_accessClient->logout();
+}
+void MainWindow::withAdminAuthorization(std::function<void()> action) {
+    if(!m_adminUnlocked || QDateTime::currentDateTimeUtc()>=m_adminExpires || m_activity.elapsed()>=300000) { lockAdministration(); return; }
+    const auto session=m_adminSession;
+    if(m_accessClient) m_accessClient->authorizeAction([this,session,action=std::move(action)] {
+        if(m_adminUnlocked && session==m_adminSession && QDateTime::currentDateTimeUtc()<m_adminExpires) action();
+    });
+    else action(); // A controlled session can be supplied by standalone UI hosts.
+}
+void MainWindow::openAdministration() {
+    if(m_adminUnlocked) { lockAdministration(); return; }
+    if(m_login) { m_login->raise(); return; }
+    m_login=new AdminLoginDialog(m_accessClient,this); auto *dialog=m_login.data();
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    connect(dialog,&QDialog::accepted,this,[this] {
+        if(m_accessClient) setAdminSession(m_accessClient->sessionId(),m_accessClient->expiresAt());
+    }); dialog->open();
+}
+void MainWindow::openDatabase() {
+    if(!m_adminUnlocked) return;
+    withAdminAuthorization([this] {
+        if(!m_database) {
+            m_database=new FaceDatabaseDialog(m_backend,this);
+            m_database->setAuthorization([this](std::function<void()> action) { withAdminAuthorization(std::move(action)); });
+            connect(m_database,&FaceDatabaseDialog::capturePersonSelected,this,[this](const PersonProfile &person) {
+                if(!m_adminUnlocked) return;
+                m_personIdEdit->setText(person.personId); m_personNameEdit->setText(person.displayName);
+                m_groupCombo->setCurrentIndex(m_groupCombo->findData(person.group));
+            });
+        } m_database->open();
+    });
+}
+void MainWindow::setStationDirection(const QString &direction,int version) {
+    const QSignalBlocker blocker(m_stationDirection);
+    m_stationDirection->setCurrentIndex(m_stationDirection->findData(direction));
+    m_directionLabel->setText(tr("方向：%1（版本%2）").arg(direction=="IN" ? tr("进") : tr("出")).arg(version));
 }

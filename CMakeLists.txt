@@ -176,13 +176,26 @@ endif()
 # GUI
 # ---------------------------------------------------------------------------
 if(FACEAPP_BUILD_GUI)
-    find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets)
-    find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets)
+    find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets Network)
+    find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets Network)
 
     add_executable(face_recognition_system WIN32
         src/app/main.cpp
         src/app/opencvfacebackend.h
         src/app/opencvfacebackend.cpp
+        src/app/opencvfacebackend_access.cpp
+        src/app/accessclient.cpp
+        src/app/accessclient.h
+        src/ui/adminlogindialog.cpp
+        src/ui/adminlogindialog.h
+        src/app/accessruntime.cpp
+        src/app/accessruntime.h
+        src/app/accessbridge.cpp
+        src/app/accessbridge.h
+        src/app/accesspublisher.cpp
+        src/app/accesspublisher.h
+        src/app/accesseventgate.cpp
+        src/app/accesseventgate.h
         src/app/voiceannouncer.cpp
         src/app/voiceannouncer.h
         src/ui/backendtypes.h
@@ -208,6 +221,7 @@ if(FACEAPP_BUILD_GUI)
     target_link_libraries(face_recognition_system PRIVATE
         facecore::facecore
         Qt${QT_VERSION_MAJOR}::Widgets
+        Qt${QT_VERSION_MAJOR}::Network
     )
 endif()
 
@@ -236,6 +250,18 @@ endif()
 # 运行期资源
 # ---------------------------------------------------------------------------
 if(FACEAPP_BUILD_GUI)
+    # Python/frontend changes do not relink the executable. Keep these assets current
+    # on every application build, including explicit --target builds.
+    add_custom_target(face_access_resources
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                ${CMAKE_CURRENT_SOURCE_DIR}/server/face_access
+                $<TARGET_FILE_DIR:face_recognition_system>/server/face_access
+        COMMAND ${CMAKE_COMMAND} -E copy
+                ${CMAKE_CURRENT_SOURCE_DIR}/server/start_server.py
+                $<TARGET_FILE_DIR:face_recognition_system>/server/start_server.py
+        VERBATIM
+    )
+    add_dependencies(face_recognition_system face_access_resources)
     add_custom_command(TARGET face_recognition_system POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory
                 ${CMAKE_CURRENT_SOURCE_DIR}/config
@@ -271,6 +297,8 @@ if(FACEAPP_BUILD_GUI)
     install(DIRECTORY config third_party_licenses
             DESTINATION ${CMAKE_INSTALL_BINDIR})
     install(DIRECTORY audio DESTINATION ${CMAKE_INSTALL_BINDIR} OPTIONAL)
+    install(DIRECTORY server/face_access DESTINATION ${CMAKE_INSTALL_BINDIR}/server)
+    install(FILES server/start_server.py server/requirements.lock DESTINATION ${CMAKE_INSTALL_BINDIR}/server)
 endif()
 
 message(STATUS "facecore features: RKNN=${FACEAPP_HAVE_RKNN} "

@@ -15,6 +15,12 @@ VERIFY_BUILD="${FACEAPP_VERIFY_BUILD_DIR:-$ROOT/build-verification}"
 JOBS="${FACEAPP_JOBS:-$(nproc)}"
 
 cd "$ROOT" || exit 1
+ACCESS_PYTHON="${FACEAPP_ACCESS_PYTHON:-$ROOT/server/.venv/bin/python}"
+if [ ! -x "$ACCESS_PYTHON" ]; then
+    echo "缺少管理服务Python环境，请先运行：bash $ROOT/scripts/setup_access_server.sh" >&2
+    exit 1
+fi
+"$ACCESS_PYTHON" -I -c 'import flask, waitress, PIL, sqlite3' || exit 1
 
 echo "== 环境 =="
 echo "root    $ROOT"
@@ -22,14 +28,14 @@ echo "build   $BUILD"
 echo "config  $CONFIG"
 echo "g++     $(g++ --version | head -n 1)"
 echo "cmake   $(cmake --version | head -n 1)"
-echo "ninja   $(ninja --version)"
+if command -v ninja >/dev/null 2>&1; then echo "ninja   $(ninja --version)"; fi
 echo "opencv4 $(pkg-config --modversion opencv4)"
 echo "Qt5     $(pkg-config --modversion Qt5Widgets)"
 echo "rknnrt  $(ls -l /lib/librknnrt.so 2>/dev/null || echo MISSING)"
 
 echo
 echo "== configure =="
-cmake -S "$ROOT" -B "$BUILD" -G Ninja \
+cmake -S "$ROOT" -B "$BUILD" \
     -DCMAKE_BUILD_TYPE=Release \
     -DFACEAPP_BUILD_GUI=ON \
     -DFACEAPP_ENABLE_RKNN="${FACEAPP_ENABLE_RKNN:-ON}" \
@@ -48,8 +54,9 @@ ldd "$BUILD/face_recognition_system" | grep -E 'rknn|opencv|Qt5|not found' || tr
 
 echo
 echo "== ctest =="
-cmake -S "$ROOT/verification" -B "$VERIFY_BUILD" -G Ninja \
-    -DCMAKE_BUILD_TYPE=Release -DFACEAPP_CORE_BUILD="$BUILD"
+cmake -S "$ROOT/verification" -B "$VERIFY_BUILD" \
+    -DCMAKE_BUILD_TYPE=Release -DFACEAPP_CORE_BUILD="$BUILD" \
+    -DPython3_EXECUTABLE="$ACCESS_PYTHON"
 cmake --build "$VERIFY_BUILD" --parallel "$JOBS"
 ctest --test-dir "$VERIFY_BUILD" --output-on-failure
 

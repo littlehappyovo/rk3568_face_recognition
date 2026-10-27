@@ -4,6 +4,7 @@
 
 #include <QObject>
 #include <QStringList>
+#include <QJsonObject>
 
 // Thread boundary between Qt Widgets and the camera/detection/recognition core.
 // Implementations live on a worker QThread. The UI only talks to these slots
@@ -38,8 +39,14 @@ signals:
     void faceDatabaseChanged(const FaceDatabasePeople &people);
     void personSamplesChanged(const QString &personId, const FaceDatabaseSamples &samples);
     void databaseOperationFinished(const QString &message);
+    void stableAccessEvent(const QJsonObject &event);
+    void stationConfigured(const QString &stationId, const QString &direction, int version, bool enabled);
+    void accessCommandFinished(const QString &requestId, const QJsonObject &result, const QJsonObject &error);
 
 public slots:
+    virtual void executeAccessCommand(const QString &requestId, const QString &, const QJsonObject &) {
+        emit accessCommandFinished(requestId, {}, {{"code", "unsupported"}, {"message", tr("当前后端不支持远程管理")}});
+    }
     virtual void setVoiceVolume(int volume, bool muted) { emit voiceVolumeChanged(volume, muted); }
     virtual void configureBackend(const QString &backendId) = 0;
     virtual void refreshCameras() = 0;

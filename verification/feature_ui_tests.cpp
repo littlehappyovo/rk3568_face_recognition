@@ -1,6 +1,7 @@
 #include "mainwindow.h"
 #include "mockfacebackend.h"
 #include "facedatabasedialog.h"
+#include "frameview.h"
 #include <QCheckBox>
 #include <QDialog>
 #include <QLineEdit>
@@ -14,6 +15,10 @@
 #include <QAbstractButton>
 #include <QMessageBox>
 #include <QSlider>
+#include <QDateTime>
+#include <QGroupBox>
+#include <QScrollArea>
+#include <QComboBox>
 #include <QtTest>
 
 class FeatureUiTests : public QObject {
@@ -38,6 +43,7 @@ private slots:
     void captureRequestsTenSamplesByDefault() {
         MockFaceBackend backend;
         MainWindow window(&backend);
+        window.setAdminSession("test-session", QDateTime::currentDateTimeUtc().addSecs(300));
         window.findChild<QLineEdit *>("capturePersonId")->setText("P001");
         window.findChild<QLineEdit *>("capturePersonName")->setText(QString::fromUtf8("测试人员"));
         QSignalSpy capture(&window, &MainWindow::beginCaptureRequested);
@@ -66,6 +72,7 @@ private slots:
     void databaseManagerOpensFromMainWindow() {
         MockFaceBackend backend;
         MainWindow window(&backend);
+        window.setAdminSession("test-session", QDateTime::currentDateTimeUtc().addSecs(300));
         auto *button = window.findChild<QPushButton *>("faceDatabaseButton");
         QVERIFY2(button, "The face database must have a visible management entry");
         window.show();
@@ -96,6 +103,71 @@ private slots:
         QTest::keyClick(&window,Qt::Key_VolumeDown); QCOMPARE(slider->value(),70);
         QTest::keyClick(&window,Qt::Key_VolumeMute); QVERIFY(mute->isChecked());
         backend.shutdown();
+    }
+    void startupShowsOnlyTwoViewsAndAdminButton() {
+        MockFaceBackend backend; MainWindow window(&backend, false); window.show();
+        QCoreApplication::processEvents();
+        QCOMPARE(window.findChildren<FrameView *>().size(), 2);
+        for (auto *view : window.findChildren<FrameView *>()) QVERIFY(view->isVisible());
+        QVERIFY(window.findChild<QGroupBox *>("sourceControls")->isHidden());
+        QVERIFY(window.findChild<QScrollArea *>("managementControls")->isHidden());
+        QVERIFY(window.findChild<QPushButton *>("adminButton")->isVisible());
+        QVERIFY(!window.findChild<QPushButton *>("faceDatabaseButton")->isEnabled());
+        const auto output = qgetenv("FACEAPP_TEST_SCREENSHOT_DIR");
+        if (!output.isEmpty()) {
+            QDir().mkpath(QString::fromUtf8(output)); window.resize(1920,1080);
+            QVERIFY(window.grab().save(QString::fromUtf8(output)+"/kiosk.png"));
+        }
+        backend.shutdown();
+    }
+    void lockedShortcutsCannotImportTrainDeleteOrChangeDirection() {
+        MockFaceBackend backend; MainWindow window(&backend, false);
+        QSignalSpy capture(&window, &MainWindow::beginCaptureRequested);
+        QSignalSpy train(&window, &MainWindow::trainModelRequested);
+        QSignalSpy configured(&window, &MainWindow::configureBackendRequested);
+        QVERIFY(QMetaObject::invokeMethod(&window, "beginCapture"));
+        for (auto *button : window.findChildren<QPushButton *>())
+            if (button->text().contains(QString::fromUtf8("重建模型"))) button->click();
+        window.findChild<QComboBox *>("stationDirection")->setCurrentIndex(1);
+        QCoreApplication::processEvents();
+        QCOMPARE(capture.count(), 0); QCOMPARE(train.count(), 0); QCOMPARE(configured.count(), 0);
+        QVERIFY(!window.findChild<QDialog *>("faceDatabaseDialog"));
+        backend.shutdown();
+    }
+    void adminUnlockRestoresExistingControls() {
+        MockFaceBackend backend; MainWindow window(&backend, false); window.show();
+        window.setAdminSession("test-session", QDateTime::currentDateTimeUtc().addSecs(300));
+        QVERIFY(window.findChild<QGroupBox *>("sourceControls")->isVisible());
+        QVERIFY(window.findChild<QScrollArea *>("managementControls")->isVisible());
+        QVERIFY(window.findChild<QPushButton *>("faceDatabaseButton")->isEnabled());
+        const auto output = qgetenv("FACEAPP_TEST_SCREENSHOT_DIR");
+        if (!output.isEmpty()) {
+            QDir().mkpath(QString::fromUtf8(output)); window.resize(1920,1080);
+            QVERIFY(window.grab().save(QString::fromUtf8(output)+"/administration.png"));
+        }
+        backend.shutdown();
+    }
+    void logoutAndTimeoutCloseDatabaseDialogAndStopCapture() {
+        MockFaceBackend backend; MainWindow window(&backend, false); window.show();
+        window.setAdminSession("test-session", QDateTime::currentDateTimeUtc().addSecs(300));
+        window.findChild<QPushButton *>("faceDatabaseButton")->click();
+        auto *dialog = window.findChild<QDialog *>("faceDatabaseDialog");
+        QVERIFY(dialog && dialog->isVisible());
+        backend.stateChanged(ServiceState::Capturing, "test capture");
+        QSignalSpy ended(&window, &MainWindow::endCaptureRequested);
+        window.lockAdministration();
+        QVERIFY(!dialog->isVisible()); QCOMPARE(ended.count(), 1);
+        QVERIFY(window.findChild<QScrollArea *>("managementControls")->isHidden());
+        backend.shutdown();
+    }
+    void automaticPollingDoesNotKeepAdminSessionAlive() {
+        MockFaceBackend backend; MainWindow window(&backend, false); window.show();
+        window.setAdminSession("test-session", QDateTime::currentDateTimeUtc().addMSecs(150));
+        QTimer frames; frames.setInterval(20);
+        connect(&frames, &QTimer::timeout, &backend, [&] { backend.frameReady(FrameResult{}); });
+        frames.start();
+        QTRY_VERIFY_WITH_TIMEOUT(window.findChild<QScrollArea *>("managementControls")->isHidden(), 1500);
+        frames.stop(); backend.shutdown();
     }
 
     void personDeletionKeepsConfirmedIdAcrossRegistryRefresh() {

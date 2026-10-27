@@ -2,6 +2,7 @@
 
 #include "backendtypes.h"
 #include <QDialog>
+#include <functional>
 
 class FaceBackendService;
 class QCheckBox;
@@ -16,6 +17,7 @@ class FaceDatabaseDialog final : public QDialog {
     Q_OBJECT
 public:
     explicit FaceDatabaseDialog(FaceBackendService *backend, QWidget *parent = nullptr);
+    void setAuthorization(std::function<void(std::function<void()>)> authorize) { m_authorize=std::move(authorize); }
 signals:
     void refreshRequested();
     void samplesRequested(const QString &personId);
@@ -32,6 +34,7 @@ private:
     void setSamples(const QString &personId, const FaceDatabaseSamples &samples);
     void setEditingEnabled(bool enabled);
     void setPending();
+    std::function<void(std::function<void()>)> m_authorize;
     FaceDatabasePeople m_people;
     QString m_selectedId;
     QLineEdit *m_search = nullptr;

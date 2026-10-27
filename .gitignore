@@ -32,3 +32,11 @@ __pycache__/
 .env.*
 *.pem
 *.key
+
+# Access service data, environment and terminal pairing credentials
+/server/.venv/
+/access/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+/pc-camera-config.json

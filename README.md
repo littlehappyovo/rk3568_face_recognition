@@ -2,8 +2,13 @@
 
 面向RK3568的Qt/C++人脸采集、检测与识别工程。使用OpenCV完成图像处理，支持RKNN/NPU检测和MobileFaceNet特征提取，并保留OpenCV/SFace与LBPH后端。
 
+系统提供密码解锁值守界面与局域网网页管理。人脸采集、检测、跟踪和识别均由RK3568本地单路摄像头完成；电脑浏览器只管理人员库、识别记录和异常。详细验证状态见[验证记录](docs/access-control-validation.md)。
+
 ## 功能
 
+- 板端默认仅显示摄像头预览和识别结果，点击“管理”后用独立密码进入原管理界面；首次在板卡设密，闲置5分钟返回值守。
+- 网页管理支持人员与样本、识别记录、进出配对、异常处理和CSV导出。板端单路摄像头方向可设为进或出；一台摄像头不能同时代表两个物理出入口。
+- 进入/离开不匹配会标记异常，未离开默认24小时超时，可修改或关闭；原记录保留当时姓名与授权快照。
 - 人脸采集默认10张，可调整为10至500张；采集过程包含质量筛选和重复样本过滤。
 - 程序默认打开配置中的摄像头，并在所选后端存在有效图库时开启实时识别。维护模式使用`--no-auto-start`。
 - 人脸库管理支持按ID或姓名搜索、修改姓名与组别、启用/禁用、查看照片与样本数量，以及删除人员或单张样本。
@@ -42,7 +47,18 @@ cmake --preset rk3568-cpu-only
 cmake --build --preset rk3568-cpu-only -j2
 ```
 
-根目录CMake构建应用和核心库，当前5组回归测试由`verification/`独立构建。旧版本中未随工程提供的`tools/rknn_probe.cpp`和`tests/test_core.cpp`已从构建入口移除。
+根目录CMake构建应用和核心库，本机回归由`verification/`独立构建（含管理后台）。
+
+## 管理后台环境
+
+```bash
+bash scripts/setup_access_server.sh
+# 安装到项目server/.venv，不修改系统Python
+```
+
+管理服务默认监听所有网络接口的8080端口，由Qt通过子进程运行Flask/Waitress；`FACEAPP_ACCESS_PYTHON`可指定服务Python，`FACEAPP_ACCESS_PORT`可改端口。先在板卡设置管理密码，再在电脑浏览器访问`http://板卡IP:8080`管理数据库。网页管理支持上传人员样本照片，但不采集或上传实时视频供识别。运行目录、备份和回退见[运维说明](docs/access-control-operations.md)。
+
+管理接口使用明文HTTP，密码、会话和人脸资料传输未加密。请仅在可信隔离的局域网使用；对外或生产部署需另行配置HTTPS和网络访问控制。系统尚未实现活体检测，不能据此保证抵御照片、屏幕或视频攻击。
 
 ## 启动
 
@@ -80,18 +96,19 @@ MIPI脚本涉及gdm3启停，需按板卡部署环境提供相应权限。默认
 
 以下使用CPU构建的核心库；在板端可将路径替换为`build-rk3568`：
 
-运行全部5组回归前，至少按[模型说明](models/README.md)准备`models/face_detection_yunet_2023mar.onnx`。后台适配器初始化使用这个检测模型；缺少时会明确报告依赖缺失。
+运行全部回归前，至少按[模型说明](models/README.md)准备`models/face_detection_yunet_2023mar.onnx`。后台适配器初始化使用这个检测模型；缺少时会明确报告依赖缺失。
 
 ```bash
-cmake -S verification -B build-verification -G Ninja \
-  -DCMAKE_BUILD_TYPE=Release -DFACEAPP_CORE_BUILD="$PWD/build-rk3568-cpu"
+cmake -S verification -B build-verification \
+  -DCMAKE_BUILD_TYPE=Release -DFACEAPP_CORE_BUILD="$PWD/build-rk3568-cpu" \
+  -DPython3_EXECUTABLE="$PWD/server/.venv/bin/python"
 cmake --build build-verification -j2
 ctest --test-dir build-verification --output-on-failure
 ```
 
 测试覆盖主窗口默认参数与启动、管理窗口异步交互、数据库持久化、删除归档、图库失效及重启回退、身份缓存，以及语音时段、轨迹去重、过期队列与播放回退、音量/静音保存和音量键。实际摄像头用例需要显式设置`FACEAPP_LIVE_BOARD_TEST=1`并释放相机设备；普通离线测试会跳过该项。测试使用临时数据，正常回归不读取真实录入照片。
 
-2026-10-24语音版本已在本机和RK3568上通过5组回归；板端分别通过PulseAudio/RK809和ALSA/RK809完成实际音频播放测试。删除确认期间的预览刷新场景此前另经ASan验证；语音改动本轮未重跑ASan。此前MIPI实测使用1920×1080显示和800×600原生取流；这些记录不等同于开放集识别准确率或持续帧率保证。DMA-BUF导出也不代表整条推理链路零拷贝。
+历次开发验证及适用边界见[验证记录](docs/access-control-validation.md)。测试与启动检查不等同于开放集识别准确率、活体防伪能力或持续帧率保证；DMA-BUF导出也不代表整条推理链路零拷贝。
 
 ## 目录
 
@@ -101,9 +118,10 @@ src/ui/               主窗口、人脸库管理和画面控件
 src/core/             检测、跟踪、预处理、图库与数据存储
 include/facecore/     核心库接口
 config/               后端、相机、质量及阈值配置
-verification/         5组离线回归与显式实机用例
+verification/         9组本机回归、临时闭环与显式实机用例
 audio/                固定播报WAV、生成记录与说明
-scripts/              构建、依赖、自检和板端显示入口
+server/               认证、SQLite、HTTP接口与管理网页
+scripts/              构建、依赖、自检与板端启动入口
 models/               模型清单和准备说明
 third_party_licenses/ 上游模型许可文本
 ```

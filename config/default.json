@@ -36,7 +36,7 @@
     "maximum_missed_frames": 8,
     "smoothing_alpha": 0.85,
     "detection_interval_frames": 10,
-    "recognition_interval_ms": 1000
+    "recognition_interval_ms": 50
   },
   "preprocess": {
     "face_width": 128,

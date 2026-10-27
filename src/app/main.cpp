@@ -2,6 +2,10 @@
 #include "mainwindow.h"
 #include "mockfacebackend.h"
 #include "opencvfacebackend.h"
+#include "accessruntime.h"
+#include "accessclient.h"
+#include "accessbridge.h"
+#include "accesspublisher.h"
 
 #include <facecore/facecore.hpp>
 
@@ -24,6 +28,8 @@
 #include <QTimer>
 #include <QWidget>
 #include <QThread>
+#include <QStatusBar>
+#include <QUuid>
 
 #include <cstring>
 #include <filesystem>
@@ -358,6 +364,29 @@ int main(int argc, char *argv[])
     // --auto-start remains compatible with existing launchers; --no-auto-start
     // explicitly opts out for maintenance or an interactive camera selection.
     MainWindow window(backend, !arguments.contains(QStringLiteral("--no-auto-start")));
+    QString runtimeRoot = QString::fromLocal8Bit(qgetenv("FACEAPP_DATA_DIR"));
+    if (runtimeRoot.isEmpty()) runtimeRoot = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    if (runtimeRoot.isEmpty()) runtimeRoot = QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("runtime"));
+    const QString accessDirectory = QDir(runtimeRoot).filePath(QStringLiteral("access"));
+    AccessClient accessClient;
+    window.setAccessClient(&accessClient);
+    AccessRuntime accessRuntime(QCoreApplication::applicationDirPath());
+    AccessBridge accessBridge(accessRuntime.localSecret());
+    AccessPublisher accessPublisher(QDir(accessDirectory).filePath(QStringLiteral("outbox")));
+    accessBridge.attachBackend(backend);
+    QObject::connect(backend, &FaceBackendService::stableAccessEvent, &accessPublisher, &AccessPublisher::enqueue, Qt::QueuedConnection);
+    QObject::connect(&accessRuntime, &AccessRuntime::ready, &accessPublisher, [&](const QUrl &baseUrl) {
+        accessPublisher.setEndpoint(baseUrl, accessRuntime.localSecret());
+        accessClient.setEndpoint(baseUrl, accessRuntime.localSecret());
+    });
+    QObject::connect(&accessRuntime, &AccessRuntime::stationConfiguration, backend, [backend](const QJsonObject &configuration) {
+        backend->executeAccessCommand(QUuid::createUuid().toString(QUuid::WithoutBraces), QStringLiteral("station.configure"), configuration);
+    }, Qt::QueuedConnection);
+    const auto accessFault = [&window](const QString &message) { window.statusBar()->showMessage(message); };
+    QObject::connect(&accessRuntime, &AccessRuntime::fault, &window, accessFault);
+    QObject::connect(&accessBridge, &AccessBridge::fault, &window, accessFault);
+    QObject::connect(&accessPublisher, &AccessPublisher::fault, &window, accessFault);
+    if (accessBridge.listen(QDir(accessDirectory).filePath(QStringLiteral("control.sock")))) accessRuntime.start(accessDirectory);
     if (arguments.contains(QStringLiteral("--fullscreen"))) {
         // MIPI 屏是 1080x1920 竖屏，用全屏铺满，避免窗口比屏幕还大。
         window.showFullScreen();
@@ -374,9 +403,11 @@ int main(int argc, char *argv[])
     // 被分发。它返回后才进入下面的有序关闭流程。
     const int result = application.exec();
 
+    accessBridge.stop();
     backend->requestShutdown();
     QMetaObject::invokeMethod(backend, "shutdown", Qt::BlockingQueuedConnection);
     backendThread.quit();
     backendThread.wait();
+    accessRuntime.stop();
     return result;
 }

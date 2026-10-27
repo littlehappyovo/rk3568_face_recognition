@@ -11,6 +11,9 @@
 #include <QSaveFile>
 #include <QStandardPaths>
 #include <QTimer>
+#include <QBuffer>
+#include <QImageReader>
+#include <QUuid>
 
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
@@ -1126,6 +1129,7 @@ void OpenCvFaceBackend::selectCaptureTrack(qint64 trackId)
 
 void OpenCvFaceBackend::endCapture()
 {
+    if(m_rawCaptureActive) { m_rawCaptureActive=false; emit rawCaptureProgress(0,0); }
     if (!m_captureActive) {
         return;
     }
@@ -1173,23 +1177,34 @@ void OpenCvFaceBackend::beginRawFrameCapture()
 
 void OpenCvFaceBackend::trainModel()
 {
+    if (m_shutdownRequested.load(std::memory_order_relaxed)) return;
+    if (m_training) { emit errorOccurred(tr("训练正在进行"), tr("请等待当前任务完成。")); return; }
+    if (m_captureActive) { emit errorOccurred(tr("暂不能训练"), tr("请先结束人脸采集。")); return; }
+    try { rebuildGalleryOrThrow(); }
+    catch (const std::exception &exception) {
+        reportException(tr("模型训练失败"), exception);
+        if (m_streaming) setState(ServiceState::Streaming, tr("模型训练失败；摄像头视频已恢复"));
+    }
+}
+
+void OpenCvFaceBackend::rebuildGalleryOrThrow()
+{
     // 这里的“训练”不是重新训练 MobileFaceNet/SFace 权重，而是使用已有样本
     // 重建 LBPH 模型和 embedding 人员特征库。训练期间暂停摄像头，避免同时读写。
     if (m_shutdownRequested.load(std::memory_order_relaxed)) {
-        return;
+        throw std::runtime_error("程序正在退出");
     }
     if (m_training) {
-        emit errorOccurred(tr("训练正在进行"), tr("请等待当前任务完成。"));
-        return;
+        throw std::runtime_error("训练正在进行，请等待当前任务完成");
     }
     if (m_captureActive) {
-        emit errorOccurred(tr("暂不能训练"), tr("请先结束人脸采集。"));
-        return;
+        throw std::runtime_error("请先结束人脸采集");
     }
 
     const bool resumeStreaming = m_streaming && m_cameraReader
                                  && m_cameraReader->isOpen();
     bool operationFailed = false;
+    std::exception_ptr failure;
     m_frameTimer->stop();
     if (resumeStreaming) {
         m_cameraReader->pause();
@@ -1353,7 +1368,8 @@ void OpenCvFaceBackend::trainModel()
                  tr("模型训练完成，共使用 %1 张样本").arg(samples.size()));
     } catch (const std::exception &exception) {
         operationFailed = true;
-        reportException(tr("模型训练失败"), exception);
+        Q_UNUSED(exception);
+        failure = std::current_exception();
     }
     m_training = false;
     if (resumeStreaming && !m_shutdownRequested.load(std::memory_order_relaxed)) {
@@ -1363,6 +1379,7 @@ void OpenCvFaceBackend::trainModel()
             setState(ServiceState::Streaming, tr("模型训练失败；摄像头视频已恢复"));
         }
     }
+    if (failure) std::rethrow_exception(failure);
 }
 
 void OpenCvFaceBackend::setRecognitionEnabled(bool enabled)
@@ -1807,6 +1824,11 @@ void OpenCvFaceBackend::registerPersonOrThrow(const PersonProfile &person)
 
 void OpenCvFaceBackend::resetTrackingState() noexcept
 {
+    m_accessStreamId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    m_accessEvents.resetSource(QStringLiteral("board-in"));
+    m_recognitionMemory.clear();
+    m_activeTrackIds.clear();
+    clearReferenceCards();
     if (m_voice) m_voice->reset();
     if (m_asyncDetector) {
         m_asyncDetector->discardPendingResults();
@@ -2073,6 +2095,14 @@ FrameResult OpenCvFaceBackend::processFrame(
         QSet<int> alive;
         for (const auto id : m_tracker->activeTrackIds()) alive.insert(static_cast<int>(id));
         m_voice->onFrame(output.faces, QDateTime::currentDateTime().time().hour(), alive);
+    }
+    if (m_recognitionEnabled && m_accessStationEnabled) {
+        QSet<int> retained;
+        for (const auto id : m_tracker->activeTrackIds()) retained.insert(static_cast<int>(id));
+        const auto observed = QDateTime::fromMSecsSinceEpoch(frame.timestampUs/1000, Qt::UTC);
+        for (const auto &event : m_accessEvents.observe(QStringLiteral("board-in"),
+            m_accessStreamId, m_accessStationVersion, output.faces, retained, observed,
+            !stillImage && allowCapture)) emit stableAccessEvent(event);
     }
 
     for (auto iterator = m_recognitionMemory.begin(); iterator != m_recognitionMemory.end();) {
@@ -2355,7 +2385,7 @@ void OpenCvFaceBackend::captureIfEligible(
     }
 }
 
-void OpenCvFaceBackend::saveSample(const facecore::Frame &frame,
+facecore::SampleRecord OpenCvFaceBackend::saveSample(const facecore::Frame &frame,
                                    const facecore::TrackedFace &track,
                                    const facecore::FaceSample &sample,
                                    const facecore::QualityReport &quality,
@@ -2372,7 +2402,41 @@ void OpenCvFaceBackend::saveSample(const facecore::Frame &frame,
     metadata.qualityScore = quality.sharpness;
     metadata.preprocessingVersion = m_config.preprocess.version;
     metadata.split = facecore::DataSplit::Unassigned;
-    m_dataset->saveSample(sample.grayFace, sample.alignedBgrFace, std::move(metadata));
+    return m_dataset->saveSample(sample.grayFace, sample.alignedBgrFace, std::move(metadata));
+}
+
+QJsonObject OpenCvFaceBackend::importAccessSample(const QString &personId, const QByteArray &jpeg)
+{
+    if (jpeg.isEmpty() || jpeg.size() > 8*1024*1024) throw std::invalid_argument("照片大小错误");
+    PersonProfile person;
+    for (const auto &record : m_dataset->loadRegistry()) if (utf8(record.personId) == personId) {
+        if (!record.enabled) throw std::invalid_argument("请先启用该人员再上传样本");
+        person = {personId, utf8(record.displayName), record.group == facecore::PersonGroup::OutGroup ? "out" : "in"};
+        break;
+    }
+    if (person.personId.isEmpty()) throw std::invalid_argument("人员不存在");
+    QBuffer input;
+    input.setData(jpeg); input.open(QIODevice::ReadOnly);
+    QImageReader reader(&input);
+    const auto size = reader.size();
+    if (reader.format() != "jpeg" || !size.isValid() || size.width() > 4096 || size.height() > 4096)
+        throw std::invalid_argument("照片格式或尺寸错误");
+    QImage image = reader.read().convertToFormat(QImage::Format_RGB888);
+    if (image.isNull()) throw std::invalid_argument("照片无法解码");
+    facecore::Frame frame;
+    const cv::Mat rgb(image.height(), image.width(), CV_8UC3, image.bits(), image.bytesPerLine());
+    cv::cvtColor(rgb, frame.image, cv::COLOR_RGB2BGR);
+    frame.timestampUs = QDateTime::currentMSecsSinceEpoch()*1000;
+    const auto detections = m_asyncDetector->detectSynchronously(frame.image);
+    if (detections.size() != 1) throw std::invalid_argument("上传照片须包含一张清晰人脸");
+    const auto quality = m_quality->evaluate(frame.image, detections.front());
+    if (!quality.accepted) throw std::invalid_argument("照片人脸质量不足，请更换清晰正脸照片");
+    facecore::TrackedFace track; track.trackId = 1; track.detection = detections.front();
+    auto sample = m_preprocessor->process(frame.image, track.detection);
+    sample.quality = quality;
+    const auto stored = saveSample(frame, track, sample, quality, person, makeSessionId("WEB"), "web-upload");
+    finishDatabaseChange(tr("网页照片样本已保存"));
+    return {{"person_id", personId}, {"sample_id", utf8(stored.sampleId)}};
 }
 
 bool OpenCvFaceBackend::backendReady() const

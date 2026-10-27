@@ -1,4 +1,5 @@
 #include "facedatabasedialog.h"
+#include <QPointer>
 #include "facebackendservice.h"
 
 #include <QCheckBox>
@@ -161,16 +162,16 @@ FaceDatabaseDialog::FaceDatabaseDialog(FaceBackendService *backend, QWidget *par
             return;
         }
     });
-    connect(this, &FaceDatabaseDialog::refreshRequested, backend,
-            &FaceBackendService::refreshFaceDatabase, Qt::QueuedConnection);
-    connect(this, &FaceDatabaseDialog::samplesRequested, backend,
-            &FaceBackendService::loadPersonSamples, Qt::QueuedConnection);
-    connect(this, &FaceDatabaseDialog::updatePersonRequested, backend,
-            &FaceBackendService::updateDatabasePerson, Qt::QueuedConnection);
-    connect(this, &FaceDatabaseDialog::deletePersonRequested, backend,
-            &FaceBackendService::deleteDatabasePerson, Qt::QueuedConnection);
-    connect(this, &FaceDatabaseDialog::deleteSampleRequested, backend,
-            &FaceBackendService::deleteDatabaseSample, Qt::QueuedConnection);
+    auto queue=[this,backend](std::function<void()> action) {
+        QPointer<FaceDatabaseDialog> self(this);
+        auto guarded=[self,backend,action=std::move(action)] { if(self && self->isVisible()) QMetaObject::invokeMethod(backend,action,Qt::QueuedConnection); };
+        if(m_authorize) m_authorize(std::move(guarded)); else guarded();
+    };
+    connect(this,&FaceDatabaseDialog::refreshRequested,this,[queue,backend] { queue([backend] { backend->refreshFaceDatabase(); }); });
+    connect(this,&FaceDatabaseDialog::samplesRequested,this,[queue,backend](const QString &id) { queue([backend,id] { backend->loadPersonSamples(id); }); });
+    connect(this,&FaceDatabaseDialog::updatePersonRequested,this,[queue,backend](const PersonProfile &person,bool enabled) { queue([backend,person,enabled] { backend->updateDatabasePerson(person,enabled); }); });
+    connect(this,&FaceDatabaseDialog::deletePersonRequested,this,[queue,backend](const QString &id) { queue([backend,id] { backend->deleteDatabasePerson(id); }); });
+    connect(this,&FaceDatabaseDialog::deleteSampleRequested,this,[queue,backend](const QString &id,const QString &sample) { queue([backend,id,sample] { backend->deleteDatabaseSample(id,sample); }); });
     connect(backend, &FaceBackendService::faceDatabaseChanged, this, &FaceDatabaseDialog::setPeople);
     connect(backend, &FaceBackendService::personSamplesChanged, this, &FaceDatabaseDialog::setSamples);
     connect(backend, &FaceBackendService::databaseOperationFinished, this, [this](const QString &message) {

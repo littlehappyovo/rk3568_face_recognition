@@ -9,6 +9,7 @@
 #include <QFont>
 #include <QListWidget>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTableWidget>
@@ -54,6 +55,59 @@ private slots:
         QCOMPARE(samples.size(), 1); QCOMPARE(samples[0].sampleId, QString("S1"));
         QCOMPARE(samples[0].image.pixelColor(20,20), QColor(120,80,40));
         QCOMPARE(errors.count(), 0);
+        backend.shutdown();
+    }
+    void olderStationSnapshotsCannotUndoDirectionOrEnableState() {
+        QTemporaryDir data;seed(data.path());OpenCvFaceBackend backend(m_root);
+        QSignalSpy configured(&backend,&FaceBackendService::stationConfigured),replies(&backend,&FaceBackendService::accessCommandFinished);
+        backend.executeAccessCommand("new","station.configure",{{"id","board-in"},{"version",2},{"direction","OUT"},{"enabled",false}});
+        QCOMPARE(configured.count(),1);QVERIFY(replies.last()[2].toJsonObject().isEmpty());
+        const auto stream=backend.m_accessStreamId;
+        backend.m_recognitionMemory[7].stablePersonId="P1";
+        backend.executeAccessCommand("delayed","station.configure",{{"id","board-in"},{"version",1},{"direction","IN"},{"enabled",true}});
+        QVERIFY(replies.last()[2].toJsonObject().isEmpty());
+        QCOMPARE(backend.m_accessStationVersion,2);
+        QVERIFY(!backend.m_accessStationEnabled);
+        QCOMPARE(configured.count(),1);QCOMPARE(backend.m_accessStreamId,stream);
+        QCOMPARE(backend.m_recognitionMemory[7].stablePersonId,std::string("P1"));
+        backend.executeAccessCommand("pc","station.configure",{{"id","pc-out"},{"version",1},{"direction","OUT"}});
+        QVERIFY(!replies.last()[2].toJsonObject().isEmpty());
+        QCOMPARE(configured.count(),1);
+        backend.shutdown();
+    }
+    void galleryChangeResetsLocalRecognitionCache() {
+        QTemporaryDir data;seed(data.path());OpenCvFaceBackend backend(m_root);backend.refreshFaceDatabase();
+        backend.m_recognitionMemory[1].stablePersonId="P1";
+        backend.updateDatabasePerson({"P1","Changed","in"},true); QVERIFY(backend.m_recognitionMemory.empty());backend.shutdown();
+    }
+    void endCaptureAlsoStopsRawCaptureWithoutStoppingCamera() {
+        QTemporaryDir data; seed(data.path()); OpenCvFaceBackend backend(m_root);
+        backend.m_streaming=true; backend.m_rawCaptureActive=true;
+        QSignalSpy progress(&backend,&FaceBackendService::rawCaptureProgress);
+        backend.endCapture();
+        QVERIFY(!backend.m_rawCaptureActive); QVERIFY(backend.m_streaming);
+        QCOMPARE(progress.count(),1); QCOMPARE(progress.first()[1].toInt(),0);
+        backend.shutdown();
+    }
+    void trainingWhileCapturingDoesNotChangeServiceState() {
+        QTemporaryDir data; seed(data.path());
+        OpenCvFaceBackend backend(m_root);
+        backend.m_captureActive = true;
+        QSignalSpy errors(&backend, &FaceBackendService::errorOccurred);
+        QSignalSpy states(&backend, &FaceBackendService::stateChanged);
+        backend.trainModel();
+        QCOMPARE(errors.count(), 1);
+        QCOMPARE(states.count(), 0);
+        backend.m_captureActive = false;
+        backend.shutdown();
+    }
+    void resetTrackingClearsVotesBeforeTrackIdsAreReused() {
+        QTemporaryDir data; seed(data.path());
+        OpenCvFaceBackend backend(m_root);
+        auto &memory = backend.m_recognitionMemory[1];
+        memory.consensusReached = true; memory.stablePersonId = "P1";
+        backend.resetTrackingState();
+        QVERIFY(backend.m_recognitionMemory.empty());
         backend.shutdown();
     }
     void switchingToUnavailableBackendCancelsQueuedSpeech() {
@@ -193,6 +247,16 @@ private slots:
         QVERIFY(recognition);
         QTRY_VERIFY_WITH_TIMEOUT(recognition->isChecked(), 15000);
         QTRY_VERIFY_WITH_TIMEOUT(frames >= 10, 15000);
+        auto *management = window.findChild<QScrollArea *>("managementControls");
+        QVERIFY(management && management->isHidden());
+        const auto screenshot = qgetenv("FACEAPP_TEST_SCREENSHOT_DIR");
+        if (!screenshot.isEmpty()) {
+            QVERIFY(QDir().mkpath(QString::fromUtf8(screenshot)));
+            QVERIFY(window.grab().save(QString::fromUtf8(screenshot)+"/live-kiosk.png"));
+        }
+        // This standalone host has no AccessClient. Authentication is exercised
+        // by admin_ui_tests; supply a bounded host session to inspect the library.
+        window.setAdminSession("explicit-live-board-test", QDateTime::currentDateTimeUtc().addSecs(30));
         auto *entry = window.findChild<QPushButton *>("faceDatabaseButton");
         QVERIFY(entry && entry->isEnabled()); entry->click();
         auto *table = window.findChild<QTableWidget *>("databasePeople");
@@ -203,7 +267,6 @@ private slots:
         qInfo() << "[live-smoke] camera frames=" << frames << "recognition=" << recognition->isChecked()
                 << "people=" << table->rowCount() << "first-person samples=" << photos->count()
                 << "window=" << window.size();
-        const auto screenshot = qgetenv("FACEAPP_TEST_SCREENSHOT_DIR");
         if (!screenshot.isEmpty()) {
             auto *dialog = window.findChild<QDialog *>("faceDatabaseDialog");
             QVERIFY(dialog->grab().save(QString::fromUtf8(screenshot)+"/live-face-database.png"));

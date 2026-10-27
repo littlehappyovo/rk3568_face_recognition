@@ -73,6 +73,12 @@ if [ ! -x "$APP" ]; then
     exit 1
 fi
 
+# The access service stays in the project environment; never install into system Python here.
+export FACEAPP_ACCESS_PYTHON="${FACEAPP_ACCESS_PYTHON:-$ROOT/server/.venv/bin/python}"
+if [ ! -x "$FACEAPP_ACCESS_PYTHON" ]; then
+    echo "[access] 管理后台环境未就绪；请运行scripts/setup_access_server.sh。摄像头仍可启动。" >&2
+fi
+
 # 人脸识别使用 eglfs 直接占用 DRM；只有在它启动期间停止 Ubuntu 图形登录。
 # 通过 sudoers 允许的两条 systemctl 命令完成切换，不把密码写进脚本。
 if ! sudo -n systemctl stop gdm3.service; then

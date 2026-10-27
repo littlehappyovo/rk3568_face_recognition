@@ -68,7 +68,7 @@ struct TrackerConfig {
     int maximumMissedFrames{8};
     float smoothingAlpha{0.65F};
     int detectionIntervalFrames{10};
-    int recognitionIntervalMs{1000};
+    int recognitionIntervalMs{50};
 };
 
 struct PreprocessConfig {

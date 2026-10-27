@@ -2,6 +2,7 @@
 
 #include "facebackendservice.h"
 #include "recognitionmemory.h"
+#include "accesseventgate.h"
 
 #include <facecore/facecore.hpp>
 
@@ -33,6 +34,8 @@ public:
     void requestShutdown() noexcept override;
 
 public slots:
+    void executeAccessCommand(const QString &requestId, const QString &operation,
+                              const QJsonObject &payload) override;
     void setVoiceVolume(int volume, bool muted) override;
     void configureBackend(const QString &backendId) override;
     void refreshCameras() override;
@@ -83,6 +86,8 @@ private:
     std::vector<facecore::FaceDetection> predictDetections(
         const cv::Mat &previousGray, const cv::Mat &currentGray) const;
     void resetTrackingState() noexcept;
+    void rebuildGalleryOrThrow();
+    QJsonObject importAccessSample(const QString &personId, const QByteArray &jpeg);
     FaceObservation makeObservation(const facecore::TrackedFace &track,
                                     const facecore::QualityReport &quality,
                                     const std::optional<facecore::RecognitionResult> &recognition) const;
@@ -98,7 +103,7 @@ private:
     void captureIfEligible(const facecore::Frame &frame,
                            const std::vector<facecore::TrackedFace> &tracks);
     void captureRawFrameIfRequested(const facecore::Frame &frame);
-    void saveSample(const facecore::Frame &frame,
+    facecore::SampleRecord saveSample(const facecore::Frame &frame,
                     const facecore::TrackedFace &track,
                     const facecore::FaceSample &sample,
                     const facecore::QualityReport &quality,
@@ -176,6 +181,10 @@ private:
     int m_rawCaptureTarget = 0;
     double m_smoothedFps = 0.0;
     bool m_initialized = false;
+    AccessEventGate m_accessEvents;
+    QString m_accessStreamId;
+    int m_accessStationVersion = 0;
+    bool m_accessStationEnabled = true;
     bool m_streaming = false;
     bool m_captureActive = false;
     bool m_rawCaptureActive = false;
