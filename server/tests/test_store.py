@@ -90,6 +90,18 @@ class AccessStoreTests(unittest.TestCase):
         self.assertEqual((anomaly["kind"], anomaly["event_id"]),
                          ("exit_without_entry", event["event_id"]))
 
+    def test_anomaly_trigger_time_uses_event_or_timeout_deadline(self):
+        self.ingest(at="2026-10-26T01:00:00.000Z")
+        self.ingest(at="2026-10-26T01:10:00.000Z")
+        duplicate = self.store.list_anomalies({})["items"][0]
+        self.assertEqual(duplicate["triggered_at"], "2026-10-26T01:10:00.000000Z")
+        self.store.expire_pending(datetime(2026, 10, 27, 1, tzinfo=timezone.utc))
+        anomalies = {item["kind"]: item for item in self.store.list_anomalies({})["items"]}
+        self.assertEqual(anomalies["missing_exit"]["triggered_at"], "2026-10-27T01:00:00.000000Z")
+        self.store.update_settings({"missing_exit_seconds": 0})
+        history = {item["kind"]: item for item in self.store.list_anomalies({"include_history": True})["items"]}
+        self.assertIsNone(history["missing_exit"]["triggered_at"])
+
     def test_retried_uuid_is_idempotent(self):
         event = self.event()
         self.assertEqual(self.store.ingest(event),

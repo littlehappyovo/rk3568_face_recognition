@@ -3,6 +3,7 @@
 
 #include <QColor>
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QDebug>
 #include <QDir>
@@ -43,6 +44,31 @@ constexpr std::int64_t kMinimumCaptureIntervalUs = 180000;
 constexpr std::int64_t kMinimumRawCaptureIntervalUs = 200000;
 constexpr int kRawFrameCaptureTarget = 20;
 constexpr qint64 kSystemMetricsIntervalMs = 1000;
+
+std::string imageFingerprint(const cv::Mat &image)
+{
+    if (image.empty()) throw std::invalid_argument("Cannot fingerprint an empty image");
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    const QByteArray shape = QByteArray::number(image.rows) + ':' + QByteArray::number(image.cols)
+                             + ':' + QByteArray::number(image.type()) + ':';
+    hash.addData(shape);
+    const auto rowBytes = static_cast<int>(image.cols * image.elemSize());
+    for (int row = 0; row < image.rows; ++row)
+        hash.addData(reinterpret_cast<const char *>(image.ptr(row)), rowBytes);
+    return hash.result().toHex().toStdString();
+}
+
+std::string embeddingModelFingerprint(const facecore::IEmbeddingFaceRecognizer &recognizer,
+                                      const facecore::SFaceConfig &config)
+{
+    const bool rknn = recognizer.extractorName().rfind("rknn-", 0) == 0;
+    const auto &path = rknn ? config.rknn.modelPath : config.modelPath;
+    QFile file(QString::fromStdString(path.string()));
+    if (!file.open(QIODevice::ReadOnly)) throw std::runtime_error("Cannot fingerprint embedding model");
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    if (!hash.addData(&file)) throw std::runtime_error("Cannot read embedding model for fingerprint");
+    return hash.result().toHex().toStdString();
+}
 
 struct CpuSnapshot {
     std::uint64_t total = 0;
@@ -1246,6 +1272,7 @@ void OpenCvFaceBackend::rebuildGalleryOrThrow()
             facecore::LabeledFaceSample sample;
             sample.personId = record.personId;
             sample.sessionId = record.sessionId;
+            sample.sampleId = record.sampleId;
             try {
                 sample.face.grayFace = m_dataset->loadGraySample(record);
             } catch (const std::exception &exception) {
@@ -1257,9 +1284,11 @@ void OpenCvFaceBackend::rebuildGalleryOrThrow()
                            << exceptionText(exception);
                 continue;
             }
+            sample.grayFingerprint = imageFingerprint(sample.face.grayFace);
             if (!record.alignedRelativePath.empty()) {
                 try {
                     sample.face.alignedBgrFace = m_dataset->loadAlignedSample(record);
+                    sample.alignedFingerprint = imageFingerprint(sample.face.alignedBgrFace);
                 } catch (const std::exception &exception) {
                     // 灰度图足够训练 LBPH；历史版本可能留下了空的彩色对齐图，
                     // 不能因为这类可选文件损坏而让整次训练失败。
@@ -1279,13 +1308,14 @@ void OpenCvFaceBackend::rebuildGalleryOrThrow()
                 "没有符合当前预处理版本且属于启用人员的训练样本");
         }
 
-        emit trainingProgress(25, tr("训练 LBPH"));
-        auto replacementLbph = std::make_unique<facecore::LbphFaceRecognizer>(m_config.lbph);
-        replacementLbph->train(samples);
-        throwIfShutdownRequested();
-
         const std::filesystem::path modelDirectory = m_runtimeDirectory / "models";
         std::filesystem::create_directories(modelDirectory);
+        emit trainingProgress(25, tr("增量更新 LBPH"));
+        auto replacementLbph = std::make_unique<facecore::LbphFaceRecognizer>(m_config.lbph);
+        const auto lbphStats = replacementLbph->trainIncremental(
+            samples, modelDirectory / ".feature-cache-lbph.yml");
+        throwIfShutdownRequested();
+
         const std::string version = QDateTime::currentDateTimeUtc()
                                         .toString(QStringLiteral("yyyyMMdd_HHmmss_zzz"))
                                         .toStdString();
@@ -1298,12 +1328,16 @@ void OpenCvFaceBackend::rebuildGalleryOrThrow()
         const bool hasAlignedSamples = !alignedSamples.empty();
         bool sfaceUpdated = false;
         bool mobileFaceNetUpdated = false;
+        facecore::IncrementalTrainingStats sfaceStats;
+        facecore::IncrementalTrainingStats mobileFaceNetStats;
         if (hasAlignedSamples) {
             std::string recognizerWarning;
             replacementSface =
                 facecore::createEmbeddingRecognizer(m_config.sface, &recognizerWarning);
             if (replacementSface) {
-                replacementSface->buildGallery(alignedSamples);
+                sfaceStats = replacementSface->buildGalleryIncremental(
+                    alignedSamples, modelDirectory / ".feature-cache-sface.yml",
+                    embeddingModelFingerprint(*replacementSface, m_config.sface));
                 throwIfShutdownRequested();
                 replacementSface->save(modelDirectory / ("sface_" + version + ".yml"));
                 sfaceUpdated = true;
@@ -1316,7 +1350,9 @@ void OpenCvFaceBackend::rebuildGalleryOrThrow()
             replacementMobileFaceNet = facecore::createEmbeddingRecognizer(
                 m_config.mobilefacenet, &mobileFaceNetWarning, false);
             if (replacementMobileFaceNet) {
-                replacementMobileFaceNet->buildGallery(alignedSamples);
+                mobileFaceNetStats = replacementMobileFaceNet->buildGalleryIncremental(
+                    alignedSamples, modelDirectory / ".feature-cache-mobilefacenet.yml",
+                    embeddingModelFingerprint(*replacementMobileFaceNet, m_config.mobilefacenet));
                 throwIfShutdownRequested();
                 replacementMobileFaceNet->save(
                     modelDirectory / ("mobilefacenet_" + version + ".yml"));
@@ -1347,8 +1383,17 @@ void OpenCvFaceBackend::rebuildGalleryOrThrow()
                 ? tr("SFace 与 MobileFaceNet")
                 : sfaceUpdated ? tr("SFace")
                                : mobileFaceNetUpdated ? tr("MobileFaceNet") : QString();
+        QString incrementalSummary = tr("LBPH：新增%1，复用%2，移除%3")
+                                         .arg(lbphStats.recomputed).arg(lbphStats.reused).arg(lbphStats.removed);
+        if (sfaceUpdated)
+            incrementalSummary += tr("；SFace：新增%1，复用%2，移除%3")
+                                      .arg(sfaceStats.recomputed).arg(sfaceStats.reused).arg(sfaceStats.removed);
+        if (mobileFaceNetUpdated)
+            incrementalSummary += tr("；MobileFaceNet：新增%1，复用%2，移除%3")
+                                      .arg(mobileFaceNetStats.recomputed).arg(mobileFaceNetStats.reused)
+                                      .arg(mobileFaceNetStats.removed);
         emit modelChanged(QString::fromStdString(version),
-                          embeddingNames.isEmpty()
+                          incrementalSummary + QStringLiteral("；") + (embeddingNames.isEmpty()
                               ? tr("LBPH 已生成；embedding 特征库未更新；有效彩色对齐图 %1 张，无效灰度图 %2，无效对齐图 %3；跳过孤儿/禁用 %4，旧版本 %5，验证/测试集 %6")
                                     .arg(alignedSamples.size())
                                     .arg(skippedInvalidGray)
@@ -1363,7 +1408,7 @@ void OpenCvFaceBackend::rebuildGalleryOrThrow()
                                     .arg(skippedDisabledOrOrphan)
                                     .arg(skippedVersion)
                                     .arg(skippedReservedSplit)
-                                    .arg(skippedInvalidAligned));
+                                    .arg(skippedInvalidAligned)));
         setState(resumeStreaming ? ServiceState::Streaming : ServiceState::Idle,
                  tr("模型训练完成，共使用 %1 张样本").arg(samples.size()));
     } catch (const std::exception &exception) {
@@ -1615,6 +1660,14 @@ void OpenCvFaceBackend::initializeCore()
         qInfo().noquote() << "[recognizer]" << utf8(recognizerWarning);
     }
     if (m_sface) {
+        try {
+            m_sface->setModelFingerprint(embeddingModelFingerprint(*m_sface, m_config.sface));
+        } catch (const std::exception &exception) {
+            recognizerWarning = std::string("无法校验 SFace 模型文件：") + exception.what();
+            m_sface.reset();
+        }
+    }
+    if (m_sface) {
         m_backendSummary = QStringLiteral("%1（%2）")
                                .arg(QString::fromStdString(m_sface->name()),
                                     utf8(m_sface->extractorName()));
@@ -1630,6 +1683,15 @@ void OpenCvFaceBackend::initializeCore()
         m_config.mobilefacenet, &mobileFaceNetWarning, false);
     if (!mobileFaceNetWarning.empty()) {
         qInfo().noquote() << "[recognizer/mobilefacenet]" << utf8(mobileFaceNetWarning);
+    }
+    if (m_mobileFaceNet) {
+        try {
+            m_mobileFaceNet->setModelFingerprint(
+                embeddingModelFingerprint(*m_mobileFaceNet, m_config.mobilefacenet));
+        } catch (const std::exception &exception) {
+            mobileFaceNetWarning = std::string("无法校验 MobileFaceNet 模型文件：") + exception.what();
+            m_mobileFaceNet.reset();
+        }
     }
     if (m_mobileFaceNet) {
         m_mobileFaceNetSummary = QStringLiteral("%1（%2）")

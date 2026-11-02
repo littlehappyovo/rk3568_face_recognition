@@ -16,6 +16,7 @@
 #include <QTemporaryDir>
 #include <QThread>
 #include <QtTest>
+#include <opencv2/imgcodecs.hpp>
 
 class BackendDatabaseTests : public QObject {
     Q_OBJECT
@@ -209,6 +210,41 @@ private slots:
         reopened.setRecognitionEnabled(true);
         QVERIFY2(!afterRestart.last()[0].toBool(), "Pre-deletion galleries must not be accepted as fallback");
         reopened.shutdown();
+    }
+
+    void trainingReportsOnlyNewSamplesAfterRestart() {
+        QTemporaryDir data; seed(data.path());
+        {
+            OpenCvFaceBackend backend(m_root);
+            QSignalSpy errors(&backend, &FaceBackendService::errorOccurred);
+            backend.trainModel();
+            QCOMPARE(errors.count(), 0);
+            backend.shutdown();
+        }
+        facecore::DatasetStore store((data.path() + "/data").toStdString());
+        auto first = store.loadManifest().front();
+        auto second = first;
+        second.sampleId = "S2";
+        store.saveSample(store.loadGraySample(first), store.loadAlignedSample(first), second);
+        OpenCvFaceBackend restarted(m_root);
+        QSignalSpy errors(&restarted, &FaceBackendService::errorOccurred);
+        QSignalSpy completed(&restarted, &FaceBackendService::modelChanged);
+        restarted.trainModel();
+        QCOMPARE(errors.count(), 0);
+        QCOMPARE(completed.count(), 1);
+        const QString summary = completed.last()[1].toString();
+        QVERIFY2(summary.contains(QString::fromUtf8("新增1")), qPrintable(summary));
+        QVERIFY2(summary.contains(QString::fromUtf8("复用1")), qPrintable(summary));
+        const auto changedPath = std::filesystem::path((data.path() + "/data").toStdString())
+                                 / first.relativePath;
+        QVERIFY(cv::imwrite(changedPath.string(), cv::Mat(128,128,CV_8UC1,cv::Scalar(33))));
+        restarted.trainModel();
+        QCOMPARE(errors.count(), 0);
+        QCOMPARE(completed.count(), 2);
+        const QString changedSummary = completed.last()[1].toString();
+        QVERIFY2(changedSummary.contains(QString::fromUtf8("新增1")), qPrintable(changedSummary));
+        QVERIFY2(changedSummary.contains(QString::fromUtf8("复用1")), qPrintable(changedSummary));
+        restarted.shutdown();
     }
 
     void realBoardStartupAndDatabase() {

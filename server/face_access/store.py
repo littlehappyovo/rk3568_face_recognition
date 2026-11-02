@@ -1,7 +1,7 @@
 """SQLite owns events, station history and derived visits; Qt owns face data."""
 
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import sqlite3
@@ -298,9 +298,22 @@ class AccessStore:
         where = " WHERE " + " AND ".join(conditions) if conditions else ""
         order = {"events": "observed_at DESC,event_id DESC", "visits": "entered_at DESC,id DESC", "anomalies": "id DESC"}[table]
         columns = "*" if table != "events" else "event_id,station_id,direction_version,direction,stream_id,track_id,observed_at,received_at,person_id,display_name,decision"
+        if table == "anomalies":
+            columns = "*, (SELECT observed_at FROM events WHERE events.event_id=anomalies.event_id) AS event_observed_at"
         with self.connection() as db:
             db.execute("BEGIN")
             total = db.execute(f"SELECT count(*) FROM {table}{where}", parameters).fetchone()[0]
             rows = db.execute(f"SELECT {columns} FROM {table}{where} ORDER BY {order} LIMIT ? OFFSET ?",
                               [*parameters, limit, (page - 1) * limit]).fetchall()
-            return dict(items=[dict(row) for row in rows], total=total, page=page, limit=limit)
+            items = [dict(row) for row in rows]
+            if table == "anomalies":
+                timeout = int(db.execute("SELECT value FROM settings WHERE key='missing_exit_seconds'").fetchone()[0])
+                for item in items:
+                    observed = item.pop("event_observed_at")
+                    if item["kind"] == "missing_exit":
+                        item["triggered_at"] = (utc_timestamp((datetime.fromisoformat(observed.replace("Z", "+00:00"))
+                                                               + timedelta(seconds=timeout)).isoformat())
+                                                if timeout else None)
+                    else:
+                        item["triggered_at"] = observed
+            return dict(items=items, total=total, page=page, limit=limit)

@@ -62,6 +62,16 @@ struct LabeledFaceSample {
     std::string personId;
     std::string sessionId;
     FaceSample face;
+    // Incremental cache keys are derived from the current manifest and image bytes.
+    std::string sampleId;
+    std::string grayFingerprint;
+    std::string alignedFingerprint;
+};
+
+struct IncrementalTrainingStats {
+    std::size_t recomputed{0};
+    std::size_t reused{0};
+    std::size_t removed{0};
 };
 
 struct RecognitionResult {

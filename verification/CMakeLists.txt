@@ -52,6 +52,10 @@ target_link_libraries(recognition_memory_tests PRIVATE ${OpenCV_LIBS})
 add_test(NAME face.recognition_memory COMMAND recognition_memory_tests)
 
 if(FACEAPP_CORE_BUILD)
+    add_executable(incremental_gallery_tests incremental_gallery_tests.cpp)
+    target_include_directories(incremental_gallery_tests PRIVATE ${APP_ROOT}/include ${OpenCV_INCLUDE_DIRS})
+    target_link_libraries(incremental_gallery_tests PRIVATE Qt5::Test ${FACEAPP_CORE_BUILD}/libfacecore.a ${OpenCV_LIBS} ${CMAKE_DL_LIBS})
+    add_test(NAME face.incremental_gallery COMMAND incremental_gallery_tests)
     add_executable(face_access_integration_tests access_integration_tests.cpp
         ${APP_ROOT}/src/app/accessruntime.cpp ${APP_ROOT}/src/app/accessbridge.cpp ${APP_ROOT}/src/app/accesspublisher.cpp
         ${APP_ROOT}/src/app/opencvfacebackend.cpp ${APP_ROOT}/src/app/opencvfacebackend_access.cpp

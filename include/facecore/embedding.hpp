@@ -10,6 +10,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace facecore {
@@ -52,6 +53,7 @@ public:
 
     // 同一 personId 的多个样本先取均值再归一化。
     void build(const std::vector<LabeledFaceSample>& samples, const IEmbeddingExtractor& extractor);
+    void buildFromFeatures(const std::vector<std::pair<std::string, cv::Mat>>& features);
     // 余弦排序 + 阈值 + margin 判定；图库为空或推理失败返回 Error 状态。
     RecognitionResult recognize(const FaceSample& sample,
                                 const IEmbeddingExtractor& extractor,
@@ -63,7 +65,9 @@ public:
               double cosineThreshold,
               double minimumCosineMargin,
               const std::string& modelIdentity,
-              const std::string& preprocessingVersion) const;
+              const std::string& preprocessingVersion,
+              const std::string& modelFingerprint = {},
+              const std::string& featureContract = {}) const;
     // 校验 facecore_format、feature_columns、model_identity 与预处理版本；
     // 文件里记录的阈值会通过输出参数带回，缺省时保持入参不变。
     void load(const std::filesystem::path& file,
@@ -71,7 +75,9 @@ public:
               const std::string& preprocessingVersion,
               double* cosineThreshold,
               double* minimumCosineMargin,
-              int expectedFeatureColumns = 0);
+              int expectedFeatureColumns = 0,
+              const std::string& expectedModelFingerprint = {},
+              const std::string& expectedFeatureContract = {});
 
 private:
     std::vector<Identity> identities_;
@@ -89,6 +95,10 @@ public:
     EmbeddingFaceRecognizer& operator=(const EmbeddingFaceRecognizer&) = delete;
 
     void buildGallery(const std::vector<LabeledFaceSample>& samples) override;
+    IncrementalTrainingStats buildGalleryIncremental(const std::vector<LabeledFaceSample>& samples,
+                                                     const std::filesystem::path& cacheFile,
+                                                     const std::string& modelFingerprint) override;
+    void setModelFingerprint(const std::string& modelFingerprint) override;
     RecognitionResult recognize(const FaceSample& sample) const override;
     void save(const std::filesystem::path& galleryFile) const override;
     void load(const std::filesystem::path& galleryFile) override;

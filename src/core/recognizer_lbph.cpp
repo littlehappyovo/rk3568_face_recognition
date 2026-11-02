@@ -1,5 +1,6 @@
 #include "facecore/recognizer.hpp"
 
+#include "feature_cache.hpp"
 #include "io_internal.hpp"
 
 #include <opencv2/face.hpp>
@@ -10,6 +11,7 @@
 #include <map>
 #include <mutex>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <utility>
 
@@ -94,6 +96,78 @@ void LbphFaceRecognizer::train(const std::vector<LabeledFaceSample>& samples) {
     impl_->labels = std::move(replacementLabels);
     impl_->inputSize = expectedSize;
     impl_->hasModel = true;
+}
+
+IncrementalTrainingStats LbphFaceRecognizer::trainIncremental(
+    const std::vector<LabeledFaceSample>& samples, const std::filesystem::path& cacheFile) {
+    if (samples.empty()) throw std::invalid_argument("LBPH training set is empty");
+    cv::Size size;
+    std::map<std::string, int> numericLabels;
+    for (const auto& sample : samples) {
+        if (sample.personId.empty() || sample.face.grayFace.empty()
+            || sample.face.grayFace.type() != CV_8UC1) {
+            throw std::invalid_argument("Every LBPH sample requires an identity and CV_8UC1 image");
+        }
+        if (size.empty()) size = sample.face.grayFace.size();
+        if (sample.face.grayFace.size() != size)
+            throw std::invalid_argument("All LBPH samples must have exactly the same size");
+        numericLabels.emplace(sample.personId, 0);
+    }
+    int nextLabel = 0;
+    for (auto& label : numericLabels) label.second = nextLabel++;
+    const auto& config = impl_->config;
+    if (config.neighbors >= 31) throw std::invalid_argument("LBPH neighbors exceeds incremental cache limit");
+    const std::uint64_t columns = static_cast<std::uint64_t>(config.gridX) * config.gridY
+                                  * (std::uint64_t{1} << config.neighbors);
+    if (columns > static_cast<std::uint64_t>(std::numeric_limits<int>::max()))
+        throw std::invalid_argument("LBPH histogram dimension exceeds incremental cache limit");
+    std::ostringstream contract;
+    contract << "lbph-cache-v1:" << CV_VERSION << ':' << config.preprocessingVersion << ':'
+             << config.radius << ':' << config.neighbors << ':' << config.gridX << ':'
+             << config.gridY << ':' << size.width << ':' << size.height;
+    const auto valid = [&config, columns](const cv::Mat& feature) {
+        if (feature.empty() || feature.type() != CV_32F || feature.rows != 1
+            || feature.cols != static_cast<int>(columns)
+            || !cv::checkRange(feature, true, nullptr, 0.0, 2.0)) return false;
+        const double total = cv::sum(feature)[0];
+        return std::isfinite(total) && std::abs(total - config.gridX * config.gridY) < 0.05;
+    };
+    auto update = detail::updateFeatureCache(samples, cacheFile, contract.str(), false,
+        [&config](const auto& sample) {
+            auto single = Impl::createModel(config);
+            single->train(std::vector<cv::Mat>{sample.face.grayFace}, std::vector<int>{0});
+            const auto histograms = single->getHistograms();
+            if (histograms.size() != 1) throw std::runtime_error("LBPH sample did not produce one histogram");
+            return histograms.front().clone();
+        }, valid);
+
+    // Reassemble the existing OpenCV LBPH format from cached per-sample
+    // histograms. This removes deleted identities without retraining survivors.
+    cv::FileStorage output("", cv::FileStorage::WRITE | cv::FileStorage::MEMORY | cv::FileStorage::FORMAT_YAML);
+    output << "lbph_model" << "{" << "threshold" << std::numeric_limits<double>::max()
+           << "radius" << config.radius << "neighbors" << config.neighbors
+           << "grid_x" << config.gridX << "grid_y" << config.gridY << "histograms" << "[";
+    cv::Mat labels(1, static_cast<int>(update.entries.size()), CV_32SC1);
+    for (std::size_t i = 0; i < update.entries.size(); ++i) {
+        output << update.entries[i].feature;
+        labels.at<int>(0, static_cast<int>(i)) = numericLabels.at(update.entries[i].personId);
+    }
+    output << "]" << "labels" << labels << "labelsInfo" << "[" << "]" << "}";
+    cv::FileStorage input(output.releaseAndGetString(), cv::FileStorage::READ | cv::FileStorage::MEMORY);
+    auto replacement = Impl::createModel(config);
+    replacement->read(input["lbph_model"]);
+    if (replacement->getHistograms().size() != update.entries.size()
+        || replacement->getLabels().total() != update.entries.size()) {
+        throw std::runtime_error("Reassembled LBPH model is incomplete");
+    }
+    std::map<int, std::string> replacementLabels;
+    for (const auto& label : numericLabels) replacementLabels.emplace(label.second, label.first);
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    impl_->recognizer = std::move(replacement);
+    impl_->labels = std::move(replacementLabels);
+    impl_->inputSize = size;
+    impl_->hasModel = true;
+    return update.stats;
 }
 
 RecognitionResult LbphFaceRecognizer::recognize(const FaceSample& sample) const {

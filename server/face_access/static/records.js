@@ -22,12 +22,12 @@ export class Records {
     async load(){const generation=++this.generation,kind=this.kind;$('#previous').disabled=true;$('#next').disabled=true;
         const data=await api('/api/'+kind+'?'+this.query());if(generation!==this.generation)return;this.total=data.total;
         const head=$('#records-table thead'),body=$('#records-table tbody');head.replaceChildren();body.replaceChildren();
-        const columns=kind==='events'?['时间','姓名快照','人员ID','方向','终端','结果']:kind==='visits'?['姓名快照','人员ID','进入时间','离开时间','状态']:['人员ID','异常类型','状态','备注','处理时间','操作'];
+        const columns=kind==='events'?['时间','姓名快照','人员ID','方向','终端','结果']:kind==='visits'?['姓名快照','人员ID','进入时间','离开时间','状态']:['人员ID','异常类型','触发时间','备注','处理时间','操作'];
         const row=node('tr');columns.forEach(text=>row.append(node('th',text)));head.append(row);
         for(const item of data.items){const tr=node('tr');let cells;
             if(kind==='events')cells=[localTime(item.observed_at),item.display_name||'陌生人 / 无权限',item.person_id||'—',item.direction==='IN'?'进':'出',item.station_id==='board-in'?'板卡':'历史电脑终端',item.decision==='allowed'?'已授权':'无权限'];
             else if(kind==='visits')cells=[item.display_name,item.person_id,localTime(item.entered_at),localTime(item.exited_at),states[item.status]||item.status];
-            else cells=[item.person_id,kinds[item.kind]||item.kind,`${item.active?'当前':'历史'} · ${item.resolved_at?'已处理':'待处理'}`,item.note||'—',localTime(item.resolved_at)];
+            else cells=[item.person_id,kinds[item.kind]||item.kind,localTime(item.triggered_at),item.note||'—',localTime(item.resolved_at)];
             cells.forEach(text=>{const td=node('td',text);td.title=String(text);tr.append(td);});
             if(kind==='anomalies'){const td=node('td');if(!item.resolved_at){const button=node('button','处理');button.onclick=()=>this.resolve(item);td.append(button);}tr.append(td);}body.append(tr);
         }

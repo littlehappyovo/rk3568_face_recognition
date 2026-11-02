@@ -27,6 +27,10 @@ class FACECORE_API IEmbeddingFaceRecognizer : public IFaceRecognizer {
 public:
     // 用彩色对齐人脸样本建立特征库（每种身份取均值后做 L2 归一化）。
     virtual void buildGallery(const std::vector<LabeledFaceSample>& samples) = 0;
+    virtual IncrementalTrainingStats buildGalleryIncremental(
+        const std::vector<LabeledFaceSample>& samples, const std::filesystem::path& cacheFile,
+        const std::string& modelFingerprint) = 0;
+    virtual void setModelFingerprint(const std::string& modelFingerprint) = 0;
     // 图库中的身份数量；0 表示尚未建立图库。
     virtual std::size_t identityCount() const = 0;
     // 实际使用的特征抽取器名称，例如 opencv-sface-112 / rknn-sface-112。
@@ -44,6 +48,8 @@ public:
     LbphFaceRecognizer& operator=(const LbphFaceRecognizer&) = delete;
 
     void train(const std::vector<LabeledFaceSample>& samples);
+    IncrementalTrainingStats trainIncremental(const std::vector<LabeledFaceSample>& samples,
+                                              const std::filesystem::path& cacheFile);
     RecognitionResult recognize(const FaceSample& sample) const override;
     void save(const std::filesystem::path& modelFile) const override;
     void load(const std::filesystem::path& modelFile) override;
@@ -68,6 +74,10 @@ public:
     SFaceRecognizer& operator=(const SFaceRecognizer&) = delete;
 
     void buildGallery(const std::vector<LabeledFaceSample>& samples) override;
+    IncrementalTrainingStats buildGalleryIncremental(const std::vector<LabeledFaceSample>& samples,
+                                                     const std::filesystem::path& cacheFile,
+                                                     const std::string& modelFingerprint) override;
+    void setModelFingerprint(const std::string& modelFingerprint) override;
     RecognitionResult recognize(const FaceSample& sample) const override;
     void save(const std::filesystem::path& galleryFile) const override;
     void load(const std::filesystem::path& galleryFile) override;

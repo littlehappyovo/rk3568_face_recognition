@@ -34,6 +34,16 @@ void SFaceRecognizer::buildGallery(const std::vector<LabeledFaceSample>& samples
     impl_->recognizer.buildGallery(samples);
 }
 
+IncrementalTrainingStats SFaceRecognizer::buildGalleryIncremental(
+    const std::vector<LabeledFaceSample>& samples, const std::filesystem::path& cacheFile,
+    const std::string& modelFingerprint) {
+    return impl_->recognizer.buildGalleryIncremental(samples, cacheFile, modelFingerprint);
+}
+
+void SFaceRecognizer::setModelFingerprint(const std::string& modelFingerprint) {
+    impl_->recognizer.setModelFingerprint(modelFingerprint);
+}
+
 RecognitionResult SFaceRecognizer::recognize(const FaceSample& sample) const {
     return impl_->recognizer.recognize(sample);
 }

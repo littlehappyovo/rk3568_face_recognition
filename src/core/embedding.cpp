@@ -1,5 +1,6 @@
 #include "facecore/embedding.hpp"
 
+#include "feature_cache.hpp"
 #include "io_internal.hpp"
 
 #include <opencv2/core.hpp>
@@ -7,8 +8,10 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <iomanip>
 #include <map>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <utility>
 
@@ -55,10 +58,23 @@ void EmbeddingGallery::build(const std::vector<LabeledFaceSample>& samples,
     // 同一人员可能有多张照片。先分别提取特征，再求平均并重新归一化，得到一个
     // 人员原型；识别时比较查询特征与每个人员原型，而不是保存每张照片的结果。
     if (samples.empty()) throw std::invalid_argument("Embedding gallery input is empty");
-    std::map<std::string, std::vector<cv::Mat>> features;
+    std::vector<std::pair<std::string, cv::Mat>> features;
     for (const LabeledFaceSample& sample : samples) {
         if (sample.personId.empty()) throw std::invalid_argument("Gallery personId is empty");
-        features[sample.personId].push_back(extractor.extract(sample.face.alignedBgrFace));
+        features.emplace_back(sample.personId, extractor.extract(sample.face.alignedBgrFace));
+    }
+    buildFromFeatures(features);
+}
+
+void EmbeddingGallery::buildFromFeatures(const std::vector<std::pair<std::string, cv::Mat>>& entries) {
+    if (entries.empty()) throw std::invalid_argument("Embedding gallery input is empty");
+    std::map<std::string, std::vector<cv::Mat>> features;
+    for (const auto& entry : entries) {
+        if (entry.first.empty() || entry.second.empty() || entry.second.type() != CV_32F
+            || entry.second.rows != 1 || !cv::checkRange(entry.second)) {
+            throw std::invalid_argument("Invalid embedding gallery feature");
+        }
+        features[entry.first].push_back(entry.second);
     }
 
     std::vector<Identity> replacement;
@@ -130,7 +146,9 @@ void EmbeddingGallery::save(const std::filesystem::path& file,
                             double cosineThreshold,
                             double minimumCosineMargin,
                             const std::string& modelIdentity,
-                            const std::string& preprocessingVersion) const {
+                            const std::string& preprocessingVersion,
+                            const std::string& modelFingerprint,
+                            const std::string& featureContract) const {
     if (identities_.empty()) throw std::runtime_error("Cannot save an empty embedding gallery");
     cv::FileStorage storage("", cv::FileStorage::WRITE | cv::FileStorage::MEMORY |
                                     cv::FileStorage::FORMAT_YAML);
@@ -143,6 +161,8 @@ void EmbeddingGallery::save(const std::filesystem::path& file,
             << (preprocessingVersion.empty() ? std::string("unspecified")
                                              : preprocessingVersion);
     storage << "feature_columns" << identities_.front().feature.cols;
+    if (!modelFingerprint.empty()) storage << "model_fingerprint" << modelFingerprint;
+    if (!featureContract.empty()) storage << "feature_contract" << featureContract;
     storage << "gallery" << "[";
     for (const Identity& identity : identities_) {
         storage << "{" << "person_id" << identity.personId << "feature" << identity.feature << "}";
@@ -156,7 +176,9 @@ void EmbeddingGallery::load(const std::filesystem::path& file,
                             const std::string& preprocessingVersion,
                             double* cosineThreshold,
                             double* minimumCosineMargin,
-                            int expectedFeatureColumns) {
+                            int expectedFeatureColumns,
+                            const std::string& expectedModelFingerprint,
+                            const std::string& expectedFeatureContract) {
     const std::string content = detail::readTextFile(file);
     cv::FileStorage storage(content, cv::FileStorage::READ | cv::FileStorage::MEMORY);
     if (!storage.isOpened() || storage["gallery"].empty()) {
@@ -176,6 +198,18 @@ void EmbeddingGallery::load(const std::filesystem::path& file,
     }
     if (!modelIdentity.empty() && storedModelIdentity != modelIdentity) {
         throw std::runtime_error("Embedding model identity does not match the gallery");
+    }
+    if (!expectedModelFingerprint.empty()) {
+        std::string storedFingerprint;
+        if (!storage["model_fingerprint"].empty()) storage["model_fingerprint"] >> storedFingerprint;
+        if (storedFingerprint != expectedModelFingerprint) throw std::runtime_error(
+            "Embedding gallery model fingerprint is missing or mismatched; rebuild the gallery");
+    }
+    if (!expectedFeatureContract.empty()) {
+        std::string storedContract;
+        if (!storage["feature_contract"].empty()) storage["feature_contract"] >> storedContract;
+        if (storedContract != expectedFeatureContract) throw std::runtime_error(
+            "Embedding gallery feature contract is missing or mismatched; rebuild the gallery");
     }
     if (!preprocessingVersion.empty() && storedPreprocessingVersion != preprocessingVersion) {
         throw std::runtime_error("Embedding preprocessing version does not match the gallery");
@@ -225,8 +259,26 @@ public:
         validateThresholds(config.cosineThreshold, config.minimumCosineMargin);
     }
 
+    std::string featureContract() const {
+        std::ostringstream key;
+        key << "embedding-cache-v1:" << std::quoted(config.modelIdentity) << ':'
+            << std::quoted(config.preprocessingVersion) << ':' << std::quoted(modelFingerprint) << ':'
+            << std::quoted(extractor->name()) << ':' << std::quoted(extractor->describe())
+            << ':' << CV_VERSION << ':' << config.embeddingDim << ':'
+            << config.inputWidth << ':' << config.inputHeight << ':' << config.backendId << ':' << config.targetId
+            << ':' << std::quoted(config.rknn.inputColorOrder) << ':' << std::quoted(config.rknn.inputLayout)
+            << ':' << std::quoted(config.rknn.inputMode) << ':' << std::hexfloat << config.rknn.inputScale
+            << ':' << config.rknn.inputQuantized;
+        for (double value : config.rknn.inputMean) key << ':' << std::hexfloat << value;
+        key << ":std";
+        for (double value : config.rknn.inputStd) key << ':' << std::hexfloat << value;
+        for (const auto& name : config.rknn.outputNames) key << ':' << std::quoted(name);
+        return key.str();
+    }
+
     std::shared_ptr<const IEmbeddingExtractor> extractor;
     SFaceConfig config;
+    std::string modelFingerprint;
     EmbeddingGallery gallery;
     mutable std::mutex mutex;
 };
@@ -247,6 +299,42 @@ void EmbeddingFaceRecognizer::buildGallery(const std::vector<LabeledFaceSample>&
     impl_->gallery = std::move(replacement);
 }
 
+IncrementalTrainingStats EmbeddingFaceRecognizer::buildGalleryIncremental(
+    const std::vector<LabeledFaceSample>& samples, const std::filesystem::path& cacheFile,
+    const std::string& modelFingerprint) {
+    if (modelFingerprint.empty()) throw std::invalid_argument("Model fingerprint is empty");
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    if (impl_->modelFingerprint != modelFingerprint) {
+        impl_->gallery.clear();
+        impl_->modelFingerprint = modelFingerprint;
+    }
+    const auto& config = impl_->config;
+    const auto valid = [&config](const cv::Mat& feature) {
+        if (feature.empty() || feature.type() != CV_32F || feature.rows != 1
+            || feature.cols != config.embeddingDim || !cv::checkRange(feature)) return false;
+        const double norm = cv::norm(feature, cv::NORM_L2);
+        return std::isfinite(norm) && std::abs(norm - 1.0) < 0.001;
+    };
+    auto update = detail::updateFeatureCache(samples, cacheFile, impl_->featureContract(), true,
+        [this](const auto& sample) { return impl_->extractor->extract(sample.face.alignedBgrFace); }, valid);
+    std::vector<std::pair<std::string, cv::Mat>> entries;
+    entries.reserve(update.entries.size());
+    for (const auto& entry : update.entries) entries.emplace_back(entry.personId, entry.feature);
+    EmbeddingGallery replacement;
+    replacement.buildFromFeatures(entries);
+    impl_->gallery = std::move(replacement);
+    return update.stats;
+}
+
+void EmbeddingFaceRecognizer::setModelFingerprint(const std::string& modelFingerprint) {
+    if (modelFingerprint.empty()) throw std::invalid_argument("Model fingerprint is empty");
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    if (impl_->modelFingerprint != modelFingerprint) {
+        impl_->gallery.clear();
+        impl_->modelFingerprint = modelFingerprint;
+    }
+}
+
 RecognitionResult EmbeddingFaceRecognizer::recognize(const FaceSample& sample) const {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     return impl_->gallery.recognize(sample, *impl_->extractor, impl_->config.cosineThreshold,
@@ -256,14 +344,17 @@ RecognitionResult EmbeddingFaceRecognizer::recognize(const FaceSample& sample) c
 void EmbeddingFaceRecognizer::save(const std::filesystem::path& galleryFile) const {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     impl_->gallery.save(galleryFile, impl_->config.cosineThreshold, impl_->config.minimumCosineMargin,
-                        impl_->config.modelIdentity, impl_->config.preprocessingVersion);
+                        impl_->config.modelIdentity, impl_->config.preprocessingVersion,
+                        impl_->modelFingerprint,
+                        impl_->modelFingerprint.empty() ? std::string{} : impl_->featureContract());
 }
 
 void EmbeddingFaceRecognizer::load(const std::filesystem::path& galleryFile) {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     impl_->gallery.load(galleryFile, impl_->config.modelIdentity, impl_->config.preprocessingVersion,
                         &impl_->config.cosineThreshold, &impl_->config.minimumCosineMargin,
-                        impl_->config.embeddingDim);
+                        impl_->config.embeddingDim, impl_->modelFingerprint,
+                        impl_->modelFingerprint.empty() ? std::string{} : impl_->featureContract());
 }
 
 std::string EmbeddingFaceRecognizer::name() const { return impl_->extractor->name(); }
